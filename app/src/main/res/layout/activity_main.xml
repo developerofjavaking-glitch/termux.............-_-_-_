@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:orientation="vertical">
+
+    <!-- Session bar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:background="#1E1E1E"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/sessionTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:paddingLeft="12dp"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp" />
+
+        <Button android:id="@+id/btnPrev" style="@style/KeyButton" android:text="◀" />
+        <Button android:id="@+id/btnNext" style="@style/KeyButton" android:text="▶" />
+        <Button android:id="@+id/btnNew" style="@style/KeyButton" android:text="+" />
+        <Button android:id="@+id/btnClose" style="@style/KeyButton" android:text="✕" />
+    </LinearLayout>
+
+    <com.termux.view.TerminalView
+        android:id="@+id/terminalView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:importantForAutofill="no" />
+
+    <!-- Extra keys -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:background="#1E1E1E"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/keyEsc" style="@style/KeyButton" android:text="ESC" />
+            <Button android:id="@+id/keyTab" style="@style/KeyButton" android:text="TAB" />
+            <Button android:id="@+id/keyCtrl" style="@style/KeyButton" android:text="CTRL" />
+            <Button android:id="@+id/keyAlt" style="@style/KeyButton" android:text="ALT" />
+            <Button android:id="@+id/keyLeft" style="@style/KeyButton" android:text="←" />
+            <Button android:id="@+id/keyUp" style="@style/KeyButton" android:text="↑" />
+            <Button android:id="@+id/keyDown" style="@style/KeyButton" android:text="↓" />
+            <Button android:id="@+id/keyRight" style="@style/KeyButton" android:text="→" />
+            <Button android:id="@+id/keyDash" style="@style/KeyButton" android:text="-" />
+            <Button android:id="@+id/keySlash" style="@style/KeyButton" android:text="/" />
+            <Button android:id="@+id/keyPipe" style="@style/KeyButton" android:text="|" />
+            <Button android:id="@+id/keyTilde" style="@style/KeyButton" android:text="~" />
+            <Button android:id="@+id/keyHome" style="@style/KeyButton" android:text="HOME" />
+            <Button android:id="@+id/keyEnd" style="@style/KeyButton" android:text="END" />
+            <Button android:id="@+id/keyPgUp" style="@style/KeyButton" android:text="PGUP" />
+            <Button android:id="@+id/keyPgDn" style="@style/KeyButton" android:text="PGDN" />
+        </LinearLayout>
+    </HorizontalScrollView>
+</LinearLayout>
