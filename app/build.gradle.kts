@@ -38,6 +38,9 @@ android {
 }
 
 dependencies {
+    // Aligns all Kotlin stdlib artifacts to one version (fixes "Duplicate class kotlin.*" errors).
+    implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.8.22"))
+
     implementation(project(":terminal-view"))
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core:1.13.1")
