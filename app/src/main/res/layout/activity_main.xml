@@ -44,7 +44,7 @@
             android:id="@+id/bootstrapStatusText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Installing Termux bootstrap (required for pkg &amp; pip)..."
+            android:text="Installing BoomAxe bootstrap (required for pkg &amp; pip)..."
             android:textColor="#88C0D0"
             android:textSize="13sp" />
 

@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TermuxLite"
+rootProject.name = "BoomAxe"
 include(":app", ":terminal-emulator", ":terminal-view")

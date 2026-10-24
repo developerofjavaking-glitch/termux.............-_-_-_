@@ -1,6 +1,6 @@
 {
-  "name": "Termux Lite",
-  "description": "A lightweight terminal emulator application for Android.",
+  "name": "BoomAxe",
+  "description": "A powerful terminal emulator and Linux package environment for Android.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

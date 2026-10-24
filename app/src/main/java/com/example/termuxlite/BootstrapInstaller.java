@@ -145,6 +145,9 @@ public class BootstrapInstaller {
                                 Os.chmod(outFile.getAbsolutePath(), 0755);
                             } catch (Exception ignored) {}
                         }
+                        if (name.startsWith("bin/") || name.startsWith("etc/")) {
+                            patchScriptPaths(outFile, filesDir.getAbsolutePath());
+                        }
                     }
                 }
                 zis.closeEntry();
@@ -154,6 +157,9 @@ public class BootstrapInstaller {
         callback.onStatus("Configuring symlinks and permissions...");
         for (Pair<String, String> link : symlinks) {
             String target = link.first;
+            if (target.contains("/data/data/com.termux/files")) {
+                target = target.replace("/data/data/com.termux/files", filesDir.getAbsolutePath());
+            }
             String relPath = link.second;
             if (relPath.startsWith("./")) relPath = relPath.substring(2);
             File linkFile = new File(stagingDir, relPath);
@@ -283,5 +289,21 @@ public class BootstrapInstaller {
             }
         }
         fileOrDirectory.delete();
+    }
+
+    private static void patchScriptPaths(File file, String targetPrefix) {
+        if (!file.isFile() || file.length() > 500000) return;
+        try {
+            byte[] bytes = java.nio.file.Files.readAllBytes(file.toPath());
+            // Only patch text files (first 4 bytes not ELF \x7fELF)
+            if (bytes.length >= 4 && bytes[0] == 0x7f && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F') {
+                return;
+            }
+            String content = new String(bytes, StandardCharsets.UTF_8);
+            if (content.contains("/data/data/com.termux/files")) {
+                content = content.replace("/data/data/com.termux/files", targetPrefix);
+                java.nio.file.Files.write(file.toPath(), content.getBytes(StandardCharsets.UTF_8));
+            }
+        } catch (Exception ignored) {}
     }
 }

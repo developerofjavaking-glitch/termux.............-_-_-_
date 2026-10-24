@@ -41,7 +41,7 @@ import java.util.List;
  */
 public class MainActivity extends AppCompatActivity implements TerminalSessionClient, TerminalViewClient {
 
-    private static final String TAG = "TermuxLite";
+    private static final String TAG = "BoomAxe";
     private static final int MIN_FONT_DP = 8;
     private static final int MAX_FONT_DP = 40;
 
@@ -101,7 +101,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
             File pkgFile = new File(binDir, "pkg");
             String pkgContent = "#!/system/bin/sh\n" +
-                    "echo \"\\033[1;33m[*] Termux bootstrap environment is installing in the background.\\033[0m\"\n" +
+                    "echo \"\\033[1;33m[*] BoomAxe bootstrap environment is installing in the background.\\033[0m\"\n" +
                     "echo \"[*] Once installation completes, full 'pkg' and 'apt' will be active.\"\n" +
                     "echo \"[*] Please wait a moment...\"\n";
             writeStringToFile(pkgFile, pkgContent);
@@ -111,7 +111,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
             File pipFile = new File(binDir, "pip");
             String pipContent = "#!/system/bin/sh\n" +
-                    "echo \"\\033[1;33m[*] Python and pip require the Termux bootstrap environment.\\033[0m\"\n" +
+                    "echo \"\\033[1;33m[*] Python and pip require the BoomAxe bootstrap environment.\\033[0m\"\n" +
                     "echo \"[*] Once bootstrap setup completes, run: pkg install python\\033[0m\"\n";
             writeStringToFile(pipFile, pipContent);
             try {
@@ -162,7 +162,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             public void onSuccess() {
                 runOnUiThread(() -> {
                     bootstrapStatusLayout.setVisibility(View.GONE);
-                    Toast.makeText(MainActivity.this, "Termux bootstrap installed successfully!", Toast.LENGTH_LONG).show();
+                    Toast.makeText(MainActivity.this, "BoomAxe bootstrap installed successfully!", Toast.LENGTH_LONG).show();
                     // Open a new session with bash
                     newSession();
                 });
@@ -199,7 +199,6 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         String prefix = usr.getAbsolutePath();
         String binDir = prefix + "/bin";
         String appletsDir = binDir + "/applets";
-        File termuxExec = new File(prefix, "lib/libtermux-exec.so");
 
         List<String> env = new ArrayList<>();
         env.add("TERM=xterm-256color");
@@ -212,6 +211,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("ANDROID_ROOT=/system");
         env.add("ANDROID_DATA=/data");
         env.add("EXTERNAL_STORAGE=/sdcard");
+        env.add("LD_LIBRARY_PATH=" + prefix + "/lib");
 
         File bash = new File(binDir, "bash");
         if (bash.exists()) {
@@ -220,6 +220,10 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             env.add("SHELL=/system/bin/sh");
         }
 
+        File termuxExec = new File(prefix, "lib/libtermux-exec-ld-preload.so");
+        if (!termuxExec.exists()) {
+            termuxExec = new File(prefix, "lib/libtermux-exec.so");
+        }
         if (termuxExec.exists()) {
             env.add("LD_PRELOAD=" + termuxExec.getAbsolutePath());
         }
