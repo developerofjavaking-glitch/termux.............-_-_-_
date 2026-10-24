@@ -12,6 +12,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -26,14 +27,17 @@ import com.termux.view.TerminalView;
 import com.termux.view.TerminalViewClient;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * A minimal Termux-style terminal app.
+ * A Termux-style terminal app with automatic bootstrap installer.
  *
- * Uses the terminal emulator + view modules taken from Termux (GPLv3). Starts /system/bin/sh
- * inside a pseudo-terminal, supports several sessions and an extra-keys row.
+ * Provides a pseudo-terminal environment supporting pkg, apt, python, pip,
+ * bash, and multi-session tabs.
  */
 public class MainActivity extends AppCompatActivity implements TerminalSessionClient, TerminalViewClient {
 
@@ -44,6 +48,11 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     private TerminalView terminalView;
     private TextView sessionTitle;
     private Button keyCtrl, keyAlt;
+
+    private View bootstrapStatusLayout;
+    private TextView bootstrapStatusText;
+    private ProgressBar bootstrapProgressBar;
+    private Button btnRetryBootstrap;
 
     private final List<TerminalSession> sessions = new ArrayList<>();
     private int current = -1;
@@ -66,13 +75,108 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         keyCtrl = findViewById(R.id.keyCtrl);
         keyAlt = findViewById(R.id.keyAlt);
 
+        bootstrapStatusLayout = findViewById(R.id.bootstrapStatusLayout);
+        bootstrapStatusText = findViewById(R.id.bootstrapStatusText);
+        bootstrapProgressBar = findViewById(R.id.bootstrapProgressBar);
+        btnRetryBootstrap = findViewById(R.id.btnRetryBootstrap);
+
+        btnRetryBootstrap.setOnClickListener(v -> checkAndInstallBootstrap());
+
         terminalView.setTerminalViewClient(this);
         applyFontSize();
 
         setupButtons();
+        setupFallbackCommands();
 
         newSession();
         terminalView.requestFocus();
+
+        checkAndInstallBootstrap();
+    }
+
+    private void setupFallbackCommands() {
+        try {
+            File binDir = new File(getFilesDir(), "bin");
+            if (!binDir.exists()) binDir.mkdirs();
+
+            File pkgFile = new File(binDir, "pkg");
+            String pkgContent = "#!/system/bin/sh\n" +
+                    "echo \"\\033[1;33m[*] Termux bootstrap environment is installing in the background.\\033[0m\"\n" +
+                    "echo \"[*] Once installation completes, full 'pkg' and 'apt' will be active.\"\n" +
+                    "echo \"[*] Please wait a moment...\"\n";
+            writeStringToFile(pkgFile, pkgContent);
+            try {
+                android.system.Os.chmod(pkgFile.getAbsolutePath(), 0755);
+            } catch (Exception ignored) {}
+
+            File pipFile = new File(binDir, "pip");
+            String pipContent = "#!/system/bin/sh\n" +
+                    "echo \"\\033[1;33m[*] Python and pip require the Termux bootstrap environment.\\033[0m\"\n" +
+                    "echo \"[*] Once bootstrap setup completes, run: pkg install python\\033[0m\"\n";
+            writeStringToFile(pipFile, pipContent);
+            try {
+                android.system.Os.chmod(pipFile.getAbsolutePath(), 0755);
+            } catch (Exception ignored) {}
+        } catch (Exception ignored) {}
+    }
+
+    private static void writeStringToFile(File file, String content) throws IOException {
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            fos.write(content.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private void checkAndInstallBootstrap() {
+        if (BootstrapInstaller.isInstalled(this)) {
+            bootstrapStatusLayout.setVisibility(View.GONE);
+            return;
+        }
+
+        bootstrapStatusLayout.setVisibility(View.VISIBLE);
+        bootstrapProgressBar.setIndeterminate(true);
+        bootstrapStatusText.setText("Installing Termux bootstrap (required for pkg and pip)...");
+        btnRetryBootstrap.setVisibility(View.GONE);
+
+        BootstrapInstaller.installAsync(this, new BootstrapInstaller.Callback() {
+            @Override
+            public void onProgress(long current, long total, String message) {
+                runOnUiThread(() -> {
+                    bootstrapProgressBar.setIndeterminate(false);
+                    if (total > 0) {
+                        int pct = (int) ((current * 100) / total);
+                        bootstrapProgressBar.setProgress(pct);
+                    }
+                    bootstrapStatusText.setText(message);
+                });
+            }
+
+            @Override
+            public void onStatus(String status) {
+                runOnUiThread(() -> {
+                    bootstrapProgressBar.setIndeterminate(true);
+                    bootstrapStatusText.setText(status);
+                });
+            }
+
+            @Override
+            public void onSuccess() {
+                runOnUiThread(() -> {
+                    bootstrapStatusLayout.setVisibility(View.GONE);
+                    Toast.makeText(MainActivity.this, "Termux bootstrap installed successfully!", Toast.LENGTH_LONG).show();
+                    // Open a new session with bash
+                    newSession();
+                });
+            }
+
+            @Override
+            public void onError(String error) {
+                runOnUiThread(() -> {
+                    bootstrapProgressBar.setIndeterminate(false);
+                    bootstrapStatusText.setText("Bootstrap error: " + error);
+                    btnRetryBootstrap.setVisibility(View.VISIBLE);
+                });
+            }
+        });
     }
 
     @Override
@@ -85,28 +189,53 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     // ---------------------------------------------------------------- sessions
 
     private String[] buildEnvironment() {
-        File home = getFilesDir();
-        File tmp = getCacheDir();
-        return new String[]{
-                "TERM=xterm-256color",
-                "COLORTERM=truecolor",
-                "HOME=" + home.getAbsolutePath(),
-                "TMPDIR=" + tmp.getAbsolutePath(),
-                "PREFIX=" + home.getAbsolutePath(),
-                "LANG=en_US.UTF-8",
-                "PATH=/system/bin:/system/xbin:/vendor/bin",
-                "ANDROID_ROOT=/system",
-                "ANDROID_DATA=/data",
-                "EXTERNAL_STORAGE=/sdcard",
-                "SHELL=/system/bin/sh",
-        };
+        File filesDir = getFilesDir();
+        File usr = new File(filesDir, "usr");
+        File home = new File(filesDir, "home");
+        if (!home.exists()) home.mkdirs();
+        File tmp = new File(usr, "tmp");
+        if (!tmp.exists()) tmp.mkdirs();
+
+        String prefix = usr.getAbsolutePath();
+        String binDir = prefix + "/bin";
+        String appletsDir = binDir + "/applets";
+        File termuxExec = new File(prefix, "lib/libtermux-exec.so");
+
+        List<String> env = new ArrayList<>();
+        env.add("TERM=xterm-256color");
+        env.add("COLORTERM=truecolor");
+        env.add("HOME=" + home.getAbsolutePath());
+        env.add("TMPDIR=" + tmp.getAbsolutePath());
+        env.add("PREFIX=" + prefix);
+        env.add("LANG=en_US.UTF-8");
+        env.add("PATH=" + binDir + ":" + appletsDir + ":" + filesDir.getAbsolutePath() + "/bin:/system/bin:/system/xbin:/vendor/bin");
+        env.add("ANDROID_ROOT=/system");
+        env.add("ANDROID_DATA=/data");
+        env.add("EXTERNAL_STORAGE=/sdcard");
+
+        File bash = new File(binDir, "bash");
+        if (bash.exists()) {
+            env.add("SHELL=" + bash.getAbsolutePath());
+        } else {
+            env.add("SHELL=/system/bin/sh");
+        }
+
+        if (termuxExec.exists()) {
+            env.add("LD_PRELOAD=" + termuxExec.getAbsolutePath());
+        }
+
+        return env.toArray(new String[0]);
     }
 
     private void newSession() {
-        String shell = "/system/bin/sh";
-        String cwd = getFilesDir().getAbsolutePath();
-        // args[0] is the process name, same convention as Termux.
-        String[] args = new String[]{"sh"};
+        File usr = new File(getFilesDir(), "usr");
+        File bash = new File(usr, "bin/bash");
+        File home = new File(getFilesDir(), "home");
+        if (!home.exists()) home.mkdirs();
+
+        String shell = bash.exists() ? bash.getAbsolutePath() : "/system/bin/sh";
+        String cwd = bash.exists() ? home.getAbsolutePath() : getFilesDir().getAbsolutePath();
+        String[] args = bash.exists() ? new String[]{"bash", "-l"} : new String[]{"sh"};
 
         TerminalSession session = new TerminalSession(shell, cwd, args, buildEnvironment(),
                 TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS, this);

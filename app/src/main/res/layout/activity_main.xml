@@ -30,6 +30,46 @@
         <Button android:id="@+id/btnClose" style="@style/KeyButton" android:text="✕" />
     </LinearLayout>
 
+    <!-- Bootstrap Installation Status Banner -->
+    <LinearLayout
+        android:id="@+id/bootstrapStatusLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#232731"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/bootstrapStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Installing Termux bootstrap (required for pkg &amp; pip)..."
+            android:textColor="#88C0D0"
+            android:textSize="13sp" />
+
+        <ProgressBar
+            android:id="@+id/bootstrapProgressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="6dp"
+            android:layout_marginTop="8dp"
+            android:indeterminate="false"
+            android:max="100"
+            android:progress="0" />
+
+        <Button
+            android:id="@+id/btnRetryBootstrap"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginTop="6dp"
+            android:background="#3B4252"
+            android:text="Retry Download"
+            android:textColor="#ECEFF4"
+            android:textSize="12sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
     <com.termux.view.TerminalView
         android:id="@+id/terminalView"
         android:layout_width="match_parent"
