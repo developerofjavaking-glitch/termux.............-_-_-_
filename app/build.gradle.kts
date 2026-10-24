@@ -7,7 +7,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.termuxlite"
+        applicationId = "com.aistudio.termuxlite.kqvxpa"
         minSdk = 24
         // Keep targetSdk at 28 or lower if you later want to exec binaries from the app data
         // directory (Android 10+ blocks that for targetSdk >= 29). /system/bin/sh works either way.
@@ -16,7 +16,19 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debugConfig")
+        }
         release {
             isMinifyEnabled = false
         }
