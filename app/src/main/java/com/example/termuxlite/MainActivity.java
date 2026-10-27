@@ -2,9 +2,14 @@ package com.example.termuxlite;
 
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 import android.util.Log;
 import android.view.KeyEvent;
@@ -54,8 +59,54 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     private ProgressBar bootstrapProgressBar;
     private Button btnRetryBootstrap;
 
-    private final List<TerminalSession> sessions = new ArrayList<>();
-    private int current = -1;
+    private TermuxService termuxService;
+    private boolean isBound = false;
+
+    private final ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            TermuxService.LocalBinder binder = (TermuxService.LocalBinder) service;
+            termuxService = binder.getService();
+            isBound = true;
+            termuxService.setActiveClient(MainActivity.this);
+            termuxService.setSessionListener(new TermuxService.ServiceSessionListener() {
+                @Override
+                public void onSessionListChanged() {
+                    runOnUiThread(() -> {
+                        if (termuxService == null || termuxService.getSessions().isEmpty()) {
+                            finish();
+                        } else {
+                            attachCurrentSession();
+                        }
+                    });
+                }
+
+                @Override
+                public void onSessionTitleChanged(TerminalSession session) {
+                    runOnUiThread(() -> updateTitle());
+                }
+
+                @Override
+                public void onSessionScreenUpdated(TerminalSession session) {
+                    if (termuxService != null && session == termuxService.getCurrentSession()) {
+                        runOnUiThread(() -> terminalView.onScreenUpdated());
+                    }
+                }
+            });
+
+            if (termuxService.getSessions().isEmpty()) {
+                newSession();
+            } else {
+                attachCurrentSession();
+            }
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            termuxService = null;
+            isBound = false;
+        }
+    };
 
     private boolean ctrlActive = false;
     private boolean altActive = false;
@@ -88,10 +139,23 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         setupButtons();
         setupFallbackCommands();
 
-        newSession();
         terminalView.requestFocus();
 
         checkAndInstallBootstrap();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 101);
+            }
+        }
+
+        Intent serviceIntent = new Intent(this, TermuxService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
 
     private void setupFallbackCommands() {
@@ -162,9 +226,14 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             public void onSuccess() {
                 runOnUiThread(() -> {
                     bootstrapStatusLayout.setVisibility(View.GONE);
-                    Toast.makeText(MainActivity.this, "BoomAxe bootstrap installed successfully!", Toast.LENGTH_LONG).show();
-                    // Open a new session with bash
-                    newSession();
+                    Toast.makeText(MainActivity.this, "BoomAxe Linux environment ready!", Toast.LENGTH_SHORT).show();
+                    if (termuxService != null) {
+                        List<TerminalSession> oldSessions = new ArrayList<>(termuxService.getSessions());
+                        for (TerminalSession s : oldSessions) {
+                            termuxService.removeSession(s);
+                        }
+                        newSession();
+                    }
                 });
             }
 
@@ -180,9 +249,32 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (termuxService != null) {
+            termuxService.setActiveClient(this);
+            attachCurrentSession();
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        if (termuxService != null) {
+            termuxService.setActiveClient(null);
+        }
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
-        for (TerminalSession s : sessions) s.finishIfRunning();
-        sessions.clear();
+        if (isBound) {
+            if (termuxService != null) {
+                termuxService.setActiveClient(null);
+                termuxService.setSessionListener(null);
+            }
+            unbindService(serviceConnection);
+            isBound = false;
+        }
         super.onDestroy();
     }
 
@@ -206,12 +298,20 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("HOME=" + home.getAbsolutePath());
         env.add("TMPDIR=" + tmp.getAbsolutePath());
         env.add("PREFIX=" + prefix);
+        env.add("BOOMAXE_FILES=" + filesDir.getAbsolutePath());
+        env.add("BOOMAXE_PREFIX=" + prefix);
         env.add("LANG=en_US.UTF-8");
         env.add("PATH=" + binDir + ":" + appletsDir + ":" + filesDir.getAbsolutePath() + "/bin:/system/bin:/system/xbin:/vendor/bin");
         env.add("ANDROID_ROOT=/system");
         env.add("ANDROID_DATA=/data");
         env.add("EXTERNAL_STORAGE=/sdcard");
         env.add("LD_LIBRARY_PATH=" + prefix + "/lib");
+        env.add("APT_CONFIG=" + prefix + "/etc/apt/apt.conf");
+        env.add("SSL_CERT_FILE=" + prefix + "/etc/tls/cert.pem");
+        env.add("CURL_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
+        env.add("PIP_CERT=" + prefix + "/etc/tls/cert.pem");
+        env.add("REQUESTS_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
+        env.add("TERMUX_APP_PACKAGE_MANAGER=apt");
 
         File bash = new File(binDir, "bash");
         if (bash.exists()) {
@@ -220,11 +320,25 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             env.add("SHELL=/system/bin/sh");
         }
 
+        File nativeRedirect = new File(getApplicationInfo().nativeLibraryDir, "libboomaxe-redirect.so");
+        File prefixRedirect = new File(prefix, "lib/libboomaxe-redirect.so");
+        String redirectPath = null;
+        if (nativeRedirect.exists()) {
+            redirectPath = nativeRedirect.getAbsolutePath();
+        } else if (prefixRedirect.exists()) {
+            redirectPath = prefixRedirect.getAbsolutePath();
+        }
+
         File termuxExec = new File(prefix, "lib/libtermux-exec-ld-preload.so");
         if (!termuxExec.exists()) {
             termuxExec = new File(prefix, "lib/libtermux-exec.so");
         }
-        if (termuxExec.exists()) {
+
+        if (redirectPath != null && termuxExec.exists()) {
+            env.add("LD_PRELOAD=" + redirectPath + ":" + termuxExec.getAbsolutePath());
+        } else if (redirectPath != null) {
+            env.add("LD_PRELOAD=" + redirectPath);
+        } else if (termuxExec.exists()) {
             env.add("LD_PRELOAD=" + termuxExec.getAbsolutePath());
         }
 
@@ -232,6 +346,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     }
 
     private void newSession() {
+        if (termuxService == null) return;
         File usr = new File(getFilesDir(), "usr");
         File bash = new File(usr, "bin/bash");
         File home = new File(getFilesDir(), "home");
@@ -241,46 +356,49 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         String cwd = bash.exists() ? home.getAbsolutePath() : getFilesDir().getAbsolutePath();
         String[] args = bash.exists() ? new String[]{"bash", "-l"} : new String[]{"sh"};
 
-        TerminalSession session = new TerminalSession(shell, cwd, args, buildEnvironment(),
-                TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS, this);
-        session.mSessionName = "Session " + (sessions.size() + 1);
-        sessions.add(session);
-        switchTo(sessions.size() - 1);
+        termuxService.createSession(shell, cwd, args, buildEnvironment(),
+                "Session " + (termuxService.getSessions().size() + 1));
+        attachCurrentSession();
+    }
+
+    private void attachCurrentSession() {
+        if (termuxService == null) return;
+        TerminalSession session = termuxService.getCurrentSession();
+        if (session != null) {
+            terminalView.attachSession(session);
+            terminalView.onScreenUpdated();
+            updateTitle();
+        }
     }
 
     private void switchTo(int index) {
-        if (sessions.isEmpty()) return;
-        current = ((index % sessions.size()) + sessions.size()) % sessions.size();
-        TerminalSession s = sessions.get(current);
-        terminalView.attachSession(s);
-        terminalView.onScreenUpdated();
-        updateTitle();
+        if (termuxService == null || termuxService.getSessions().isEmpty()) return;
+        termuxService.setCurrentSessionIndex(index);
+        attachCurrentSession();
     }
 
     private void closeCurrent() {
-        if (sessions.isEmpty()) return;
-        TerminalSession s = sessions.get(current);
-        s.finishIfRunning();
-        removeSession(s);
-    }
-
-    private void removeSession(TerminalSession s) {
-        int idx = sessions.indexOf(s);
-        if (idx < 0) return;
-        sessions.remove(idx);
-        if (sessions.isEmpty()) {
-            finish();
-            return;
+        if (termuxService == null || termuxService.getSessions().isEmpty()) return;
+        TerminalSession current = termuxService.getCurrentSession();
+        if (current != null) {
+            termuxService.removeSession(current);
         }
-        switchTo(Math.min(idx, sessions.size() - 1));
+        if (termuxService.getSessions().isEmpty()) {
+            finish();
+        } else {
+            attachCurrentSession();
+        }
     }
 
     private void updateTitle() {
-        if (current < 0 || current >= sessions.size()) return;
-        TerminalSession s = sessions.get(current);
+        if (termuxService == null || termuxService.getSessions().isEmpty()) return;
+        int current = termuxService.getCurrentSessionIndex();
+        int total = termuxService.getSessions().size();
+        TerminalSession s = termuxService.getCurrentSession();
+        if (s == null) return;
         String t = s.getTitle();
         String label = (t == null || t.isEmpty()) ? s.mSessionName : t;
-        sessionTitle.setText((current + 1) + "/" + sessions.size() + "  " + label);
+        sessionTitle.setText((current + 1) + "/" + total + "  " + label);
     }
 
     // ---------------------------------------------------------------- buttons
@@ -288,8 +406,12 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     private void setupButtons() {
         findViewById(R.id.btnNew).setOnClickListener(v -> newSession());
         findViewById(R.id.btnClose).setOnClickListener(v -> closeCurrent());
-        findViewById(R.id.btnPrev).setOnClickListener(v -> switchTo(current - 1));
-        findViewById(R.id.btnNext).setOnClickListener(v -> switchTo(current + 1));
+        findViewById(R.id.btnPrev).setOnClickListener(v -> {
+            if (termuxService != null) switchTo(termuxService.getCurrentSessionIndex() - 1);
+        });
+        findViewById(R.id.btnNext).setOnClickListener(v -> {
+            if (termuxService != null) switchTo(termuxService.getCurrentSessionIndex() + 1);
+        });
 
         keyCtrl.setOnClickListener(v -> { ctrlActive = !ctrlActive; refreshModifierButtons(); });
         keyAlt.setOnClickListener(v -> { altActive = !altActive; refreshModifierButtons(); });
@@ -363,8 +485,9 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
     @Override
     public void onSessionFinished(@NonNull TerminalSession finishedSession) {
-        // Shell exited (e.g. user typed "exit"): drop the session.
-        removeSession(finishedSession);
+        if (termuxService != null) {
+            termuxService.removeSession(finishedSession);
+        }
     }
 
     @Override

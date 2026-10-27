@@ -157,8 +157,12 @@ public class BootstrapInstaller {
         callback.onStatus("Configuring symlinks and permissions...");
         for (Pair<String, String> link : symlinks) {
             String target = link.first;
-            if (target.contains("/data/data/com.termux/files")) {
-                target = target.replace("/data/data/com.termux/files", filesDir.getAbsolutePath());
+            if (target.contains("/data/data/com.termux/files") || target.contains("/data/user/0/com.termux/files")) {
+                target = target.replace("/data/data/com.termux/files", filesDir.getAbsolutePath())
+                               .replace("/data/user/0/com.termux/files", filesDir.getAbsolutePath());
+            } else if (target.contains("/data/data/com.termux") || target.contains("/data/user/0/com.termux")) {
+                target = target.replace("/data/data/com.termux", filesDir.getParent())
+                               .replace("/data/user/0/com.termux", filesDir.getParent());
             }
             String relPath = link.second;
             if (relPath.startsWith("./")) relPath = relPath.substring(2);
@@ -193,6 +197,83 @@ public class BootstrapInstaller {
         try {
             Os.chmod(tmpDir.getAbsolutePath(), 0777);
         } catch (Exception ignored) {}
+
+        // Setup APT directories and configuration
+        File aptConfD = new File(prefixDir, "etc/apt/apt.conf.d");
+        aptConfD.mkdirs();
+        File sourcesListD = new File(prefixDir, "etc/apt/sources.list.d");
+        sourcesListD.mkdirs();
+        File varLibDpkg = new File(prefixDir, "var/lib/dpkg");
+        varLibDpkg.mkdirs();
+        new File(prefixDir, "var/lib/dpkg/updates").mkdirs();
+        new File(prefixDir, "var/lib/dpkg/info").mkdirs();
+        File dpkgStatus = new File(varLibDpkg, "status");
+        if (!dpkgStatus.exists()) {
+            writeStringToFile(dpkgStatus, "");
+        }
+        File aptListsPartial = new File(prefixDir, "var/lib/apt/lists/partial");
+        aptListsPartial.mkdirs();
+        File aptCacheArchives = new File(prefixDir, "var/cache/apt/archives/partial");
+        aptCacheArchives.mkdirs();
+
+        File sourcesList = new File(prefixDir, "etc/apt/sources.list");
+        String sourcesContent = "deb https://packages-cf.termux.dev/apt/termux-main stable main\n";
+        writeStringToFile(sourcesList, sourcesContent);
+
+        File aptConf = new File(prefixDir, "etc/apt/apt.conf");
+        String aptConfContent =
+                "Dir \"" + prefixDir.getAbsolutePath() + "\";\n" +
+                "Dir::State \"var/lib/apt\";\n" +
+                "Dir::State::status \"var/lib/dpkg/status\";\n" +
+                "Dir::Cache \"var/cache/apt\";\n" +
+                "Dir::Etc \"etc/apt\";\n" +
+                "Dir::Etc::parts \"apt.conf.d\";\n" +
+                "Dir::Etc::sourcelist \"sources.list\";\n" +
+                "Dir::Etc::sourceparts \"sources.list.d\";\n" +
+                "Dir::Bin::methods \"" + prefixDir.getAbsolutePath() + "/lib/apt/methods\";\n" +
+                "Dir::Bin::dpkg \"" + prefixDir.getAbsolutePath() + "/bin/dpkg\";\n" +
+                "Dir::Bin::apt-key \"" + prefixDir.getAbsolutePath() + "/bin/apt-key\";\n" +
+                "DPkg::Options {\"--admindir=" + prefixDir.getAbsolutePath() + "/var/lib/dpkg\"};\n" +
+                "Acquire::Languages \"none\";\n";
+        writeStringToFile(aptConf, aptConfContent);
+
+        // Setup Pip SSL cert configuration
+        File pipConf = new File(prefixDir, "etc/pip.conf");
+        String pipConfContent = "[global]\ncert = " + prefixDir.getAbsolutePath() + "/etc/tls/cert.pem\n";
+        writeStringToFile(pipConf, pipConfContent);
+        File userPipDir = new File(homeDir, ".config/pip");
+        userPipDir.mkdirs();
+        writeStringToFile(new File(userPipDir, "pip.conf"), pipConfContent);
+
+        // Setup shell environment in profile and .bashrc
+        File profile = new File(prefixDir, "etc/profile");
+        String profileContent =
+                "export PREFIX=\"" + prefixDir.getAbsolutePath() + "\"\n" +
+                "export HOME=\"" + homeDir.getAbsolutePath() + "\"\n" +
+                "export SSL_CERT_FILE=\"$PREFIX/etc/tls/cert.pem\"\n" +
+                "export CURL_CA_BUNDLE=\"$PREFIX/etc/tls/cert.pem\"\n" +
+                "export APT_CONFIG=\"$PREFIX/etc/apt/apt.conf\"\n" +
+                "export TERMUX_APP_PACKAGE_MANAGER=apt\n" +
+                "export PIP_CERT=\"$PREFIX/etc/tls/cert.pem\"\n" +
+                "export REQUESTS_CA_BUNDLE=\"$PREFIX/etc/tls/cert.pem\"\n";
+        writeStringToFile(profile, profileContent);
+        writeStringToFile(new File(homeDir, ".bashrc"), profileContent);
+
+        // Copy native redirect shim if available
+        try {
+            File nativeLib = new File(context.getApplicationInfo().nativeLibraryDir, "libboomaxe-redirect.so");
+            File targetLib = new File(prefixDir, "lib/libboomaxe-redirect.so");
+            if (nativeLib.exists()) {
+                copyFile(nativeLib, targetLib);
+                Os.chmod(targetLib.getAbsolutePath(), 0755);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed copying native redirect library", e);
+        }
+
+        // Deep patch all scripts in bin/ and etc/
+        patchAllScripts(new File(prefixDir, "bin"), filesDir.getAbsolutePath());
+        patchAllScripts(new File(prefixDir, "etc"), filesDir.getAbsolutePath());
 
         if (tempZip.exists()) tempZip.delete();
 
@@ -291,6 +372,40 @@ public class BootstrapInstaller {
         fileOrDirectory.delete();
     }
 
+    private static void copyFile(File src, File dst) throws IOException {
+        File parent = dst.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        try (InputStream in = new FileInputStream(src);
+             FileOutputStream out = new FileOutputStream(dst)) {
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = in.read(buf)) > 0) {
+                out.write(buf, 0, len);
+            }
+        }
+    }
+
+    private static void writeStringToFile(File file, String content) throws IOException {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            fos.write(content.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static void patchAllScripts(File dir, String targetPrefix) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isDirectory()) {
+                patchAllScripts(f, targetPrefix);
+            } else if (f.isFile()) {
+                patchScriptPaths(f, targetPrefix);
+            }
+        }
+    }
+
     private static void patchScriptPaths(File file, String targetPrefix) {
         if (!file.isFile() || file.length() > 500000) return;
         try {
@@ -300,8 +415,22 @@ public class BootstrapInstaller {
                 return;
             }
             String content = new String(bytes, StandardCharsets.UTF_8);
-            if (content.contains("/data/data/com.termux/files")) {
-                content = content.replace("/data/data/com.termux/files", targetPrefix);
+            boolean changed = false;
+            if (content.contains("/data/data/com.termux/files") || content.contains("/data/user/0/com.termux/files")) {
+                content = content.replace("/data/data/com.termux/files", targetPrefix)
+                                 .replace("/data/user/0/com.termux/files", targetPrefix);
+                changed = true;
+            }
+            if (content.contains("/data/data/com.termux") || content.contains("/data/user/0/com.termux")) {
+                File targetFile = new File(targetPrefix);
+                String parentPath = targetFile.getParent();
+                if (parentPath != null) {
+                    content = content.replace("/data/data/com.termux", parentPath)
+                                     .replace("/data/user/0/com.termux", parentPath);
+                    changed = true;
+                }
+            }
+            if (changed) {
                 java.nio.file.Files.write(file.toPath(), content.getBytes(StandardCharsets.UTF_8));
             }
         } catch (Exception ignored) {}
