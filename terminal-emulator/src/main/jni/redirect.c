@@ -212,15 +212,6 @@ int stat(const char* pathname, struct stat* statbuf) {
     return real_fn ? real_fn(rpath, statbuf) : -1;
 }
 
-int stat64(const char* pathname, void* statbuf) {
-    char buf[1024];
-    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
-    static int (*real_fn)(const char*, void*) = NULL;
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "stat64");
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "stat");
-    return real_fn ? real_fn(rpath, statbuf) : -1;
-}
-
 int lstat(const char* pathname, struct stat* statbuf) {
     char buf[1024];
     const char* rpath = redirect_path(pathname, buf, sizeof(buf));
@@ -229,28 +220,10 @@ int lstat(const char* pathname, struct stat* statbuf) {
     return real_fn ? real_fn(rpath, statbuf) : -1;
 }
 
-int lstat64(const char* pathname, void* statbuf) {
-    char buf[1024];
-    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
-    static int (*real_fn)(const char*, void*) = NULL;
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "lstat64");
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "lstat");
-    return real_fn ? real_fn(rpath, statbuf) : -1;
-}
-
 int fstatat(int dirfd, const char* pathname, struct stat* statbuf, int flags) {
     char buf[1024];
     const char* rpath = redirect_path(pathname, buf, sizeof(buf));
     static int (*real_fn)(int, const char*, struct stat*, int) = NULL;
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "fstatat");
-    return real_fn ? real_fn(dirfd, rpath, statbuf, flags) : -1;
-}
-
-int fstatat64(int dirfd, const char* pathname, void* statbuf, int flags) {
-    char buf[1024];
-    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
-    static int (*real_fn)(int, const char*, void*, int) = NULL;
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "fstatat64");
     if (!real_fn) real_fn = dlsym(RTLD_NEXT, "fstatat");
     return real_fn ? real_fn(dirfd, rpath, statbuf, flags) : -1;
 }
