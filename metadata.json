@@ -1,5 +1,5 @@
 {
-  "name": "BoomAxe",
+  "name": "BoomAux",
   "description": "A powerful terminal emulator and Linux package environment for Android.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

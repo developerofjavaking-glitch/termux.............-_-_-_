@@ -46,7 +46,7 @@ import java.util.List;
  */
 public class MainActivity extends AppCompatActivity implements TerminalSessionClient, TerminalViewClient {
 
-    private static final String TAG = "BoomAxe";
+    private static final String TAG = "BoomAux";
     private static final int MIN_FONT_DP = 8;
     private static final int MAX_FONT_DP = 40;
 
@@ -165,7 +165,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
             File pkgFile = new File(binDir, "pkg");
             String pkgContent = "#!/system/bin/sh\n" +
-                    "echo \"\\033[1;33m[*] BoomAxe bootstrap environment is installing in the background.\\033[0m\"\n" +
+                    "echo \"\\033[1;36m[*] BoomAux bootstrap environment is installing in the background.\\033[0m\"\n" +
                     "echo \"[*] Once installation completes, full 'pkg' and 'apt' will be active.\"\n" +
                     "echo \"[*] Please wait a moment...\"\n";
             writeStringToFile(pkgFile, pkgContent);
@@ -175,7 +175,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
             File pipFile = new File(binDir, "pip");
             String pipContent = "#!/system/bin/sh\n" +
-                    "echo \"\\033[1;33m[*] Python and pip require the BoomAxe bootstrap environment.\\033[0m\"\n" +
+                    "echo \"\\033[1;36m[*] Python and pip require the BoomAux bootstrap environment.\\033[0m\"\n" +
                     "echo \"[*] Once bootstrap setup completes, run: pkg install python\\033[0m\"\n";
             writeStringToFile(pipFile, pipContent);
             try {
@@ -193,12 +193,13 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     private void checkAndInstallBootstrap() {
         if (BootstrapInstaller.isInstalled(this)) {
             bootstrapStatusLayout.setVisibility(View.GONE);
+            BootstrapInstaller.setupSystemDirsAndConfigs(this, new File(getFilesDir(), "usr"), new File(getFilesDir(), "home"));
             return;
         }
 
         bootstrapStatusLayout.setVisibility(View.VISIBLE);
         bootstrapProgressBar.setIndeterminate(true);
-        bootstrapStatusText.setText("Installing Termux bootstrap (required for pkg and pip)...");
+        bootstrapStatusText.setText("Installing BoomAux packages (required for pkg and pip)...");
         btnRetryBootstrap.setVisibility(View.GONE);
 
         BootstrapInstaller.installAsync(this, new BootstrapInstaller.Callback() {
@@ -226,7 +227,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             public void onSuccess() {
                 runOnUiThread(() -> {
                     bootstrapStatusLayout.setVisibility(View.GONE);
-                    Toast.makeText(MainActivity.this, "BoomAxe Linux environment ready!", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, "BoomAux Linux environment ready!", Toast.LENGTH_SHORT).show();
                     if (termuxService != null) {
                         List<TerminalSession> oldSessions = new ArrayList<>(termuxService.getSessions());
                         for (TerminalSession s : oldSessions) {
@@ -298,12 +299,24 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("HOME=" + home.getAbsolutePath());
         env.add("TMPDIR=" + tmp.getAbsolutePath());
         env.add("PREFIX=" + prefix);
+        env.add("BOOMAUX_FILES=" + filesDir.getAbsolutePath());
+        env.add("BOOMAUX_PREFIX=" + prefix);
+        env.add("BOOMAXE_FILES=" + filesDir.getAbsolutePath());
         env.add("LANG=en_US.UTF-8");
         env.add("PATH=" + binDir + ":" + appletsDir + ":/system/bin");
+        env.add("LD_LIBRARY_PATH=" + prefix + "/lib:" + getApplicationInfo().nativeLibraryDir);
         env.add("ANDROID_ROOT=/system");
         env.add("ANDROID_DATA=/data");
         env.add("EXTERNAL_STORAGE=/sdcard");
         env.add("TERMUX_APP_PACKAGE_MANAGER=apt");
+        env.add("APT_CONFIG=" + prefix + "/etc/apt/apt.conf");
+        env.add("SSL_CERT_FILE=" + prefix + "/etc/tls/cert.pem");
+        env.add("SSL_CERT_DIR=" + prefix + "/etc/ssl/certs");
+        env.add("CURL_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
+        env.add("GIT_SSL_CAINFO=" + prefix + "/etc/tls/cert.pem");
+        env.add("REQUESTS_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
+        env.add("PIP_CERT=" + prefix + "/etc/tls/cert.pem");
+        env.add("PIP_CONFIG_FILE=" + prefix + "/etc/pip.conf");
 
         File bash = new File(binDir, "bash");
         if (bash.exists()) {
@@ -312,12 +325,27 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             env.add("SHELL=/system/bin/sh");
         }
 
+        // Configure LD_PRELOAD with our native C redirector and termux-exec
+        File prefixRedirect = new File(prefix, "lib/libboomaux-redirect.so");
+        File appRedirect = new File(getApplicationInfo().nativeLibraryDir, "libboomaux-redirect.so");
+        String redirectSo = prefixRedirect.exists() ? prefixRedirect.getAbsolutePath() :
+                (appRedirect.exists() ? appRedirect.getAbsolutePath() : null);
+
         File termuxExec = new File(prefix, "lib/libtermux-exec-ld-preload.so");
         if (!termuxExec.exists()) {
             termuxExec = new File(prefix, "lib/libtermux-exec.so");
         }
+
+        StringBuilder ldPreload = new StringBuilder();
+        if (redirectSo != null) {
+            ldPreload.append(redirectSo);
+        }
         if (termuxExec.exists()) {
-            env.add("LD_PRELOAD=" + termuxExec.getAbsolutePath());
+            if (ldPreload.length() > 0) ldPreload.append(":");
+            ldPreload.append(termuxExec.getAbsolutePath());
+        }
+        if (ldPreload.length() > 0) {
+            env.add("LD_PRELOAD=" + ldPreload.toString());
         }
 
         return env.toArray(new String[0]);

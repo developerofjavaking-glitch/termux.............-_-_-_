@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BoomAxe"
+rootProject.name = "BoomAux"
 include(":app", ":terminal-emulator", ":terminal-view")

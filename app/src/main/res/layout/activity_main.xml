@@ -18,8 +18,8 @@
             android:layout_width="26dp"
             android:layout_height="26dp"
             android:layout_marginStart="10dp"
-            android:contentDescription="BoomAxe Logo"
-            android:src="@drawable/ic_boomaxe_logo" />
+            android:contentDescription="BoomAux Logo"
+            android:src="@drawable/ic_boomaux_logo" />
 
         <TextView
             android:id="@+id/sessionTitle"
@@ -52,7 +52,7 @@
             android:id="@+id/bootstrapStatusText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Installing BoomAxe bootstrap (required for pkg &amp; pip)..."
+            android:text="Installing BoomAux bootstrap (required for pkg &amp; pip)..."
             android:textColor="#88C0D0"
             android:textSize="13sp" />
 

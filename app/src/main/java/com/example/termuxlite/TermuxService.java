@@ -32,10 +32,10 @@ import java.util.List;
  */
 public class TermuxService extends Service implements TerminalSessionClient {
 
-    private static final String TAG = "BoomAxeService";
-    private static final String CHANNEL_ID = "boomaxe_background_service";
+    private static final String TAG = "BoomAuxService";
+    private static final String CHANNEL_ID = "boomaux_background_service";
     private static final int NOTIFICATION_ID = 1337;
-    public static final String ACTION_STOP_SERVICE = "com.bomax.talha.bdcteator.ACTION_STOP_SERVICE";
+    public static final String ACTION_STOP_SERVICE = "com.boomaux.boom.bdcreator.ACTION_STOP_SERVICE";
 
     public interface ServiceSessionListener {
         void onSessionListChanged();
@@ -194,7 +194,7 @@ public class TermuxService extends Service implements TerminalSessionClient {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
-                    "BoomAxe Terminal Sessions",
+                    "BoomAux Terminal Sessions",
                     NotificationManager.IMPORTANCE_LOW
             );
             channel.setDescription("Shows notification while terminal sessions run in the background");
@@ -224,7 +224,7 @@ public class TermuxService extends Service implements TerminalSessionClient {
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("BoomAxe")
+                .setContentTitle("BoomAux")
                 .setContentText(contentText)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentIntent(contentPendingIntent)
@@ -240,7 +240,7 @@ public class TermuxService extends Service implements TerminalSessionClient {
         if (wakeLock == null) {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
-                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BoomAxe:WakeLock");
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BoomAux:WakeLock");
                 wakeLock.acquire();
             }
         }

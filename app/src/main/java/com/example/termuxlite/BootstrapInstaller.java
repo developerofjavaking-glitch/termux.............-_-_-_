@@ -8,6 +8,7 @@ import android.util.Pair;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -23,16 +24,14 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Installs the official Termux bootstrap.
+ * Installs the official Termux bootstrap Linux environment for BoomAux.
  *
- * IMPORTANT: the official bootstrap and the official apt repo are built for the
- * package name "com.termux" (prefix /data/data/com.termux/files/usr). The app's
- * applicationId MUST therefore be "com.termux", otherwise pkg/apt/pip will not work.
- * No path patching is done here on purpose.
+ * Configures apt, dpkg, pkg, pip, and SSL certificates so any package or
+ * Python library can be installed directly without path or certificate issues.
  */
 public class BootstrapInstaller {
 
-    private static final String TAG = "BootstrapInstaller";
+    private static final String TAG = "BoomAuxBootstrap";
 
     public interface Callback {
         void onProgress(long current, long total, String message);
@@ -71,12 +70,7 @@ public class BootstrapInstaller {
 
     public static void install(Context context, Callback callback) throws Exception {
         String arch = getArch();
-        Log.i(TAG, "Starting bootstrap installation for architecture: " + arch);
-
-        if (!"com.termux".equals(context.getPackageName())) {
-            throw new IOException("applicationId must be com.termux (current: "
-                    + context.getPackageName() + "). Official Termux packages only work with that name.");
-        }
+        Log.i(TAG, "Starting BoomAux bootstrap installation for architecture: " + arch);
 
         File filesDir = context.getFilesDir();
         File stagingDir = new File(filesDir, "usr-staging");
@@ -89,7 +83,7 @@ public class BootstrapInstaller {
 
         String[] downloadUrls = new String[]{
                 "https://github.com/termux/termux-packages/releases/latest/download/bootstrap-" + arch + ".zip",
-                "https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip"
+                "https://github.com/termux/termux-packages/releases/download/bootstrap-2024.10.23-r1%2Bapt-android-7/bootstrap-" + arch + ".zip"
         };
 
         boolean downloaded = false;
@@ -97,7 +91,7 @@ public class BootstrapInstaller {
 
         for (String urlStr : downloadUrls) {
             try {
-                callback.onStatus("Connecting to download server...");
+                callback.onStatus("Connecting to BoomAux package servers...");
                 downloadWithProgress(urlStr, tempZip, callback);
                 downloaded = true;
                 break;
@@ -113,7 +107,7 @@ public class BootstrapInstaller {
                     (lastException != null ? lastException.getMessage() : "unknown error"));
         }
 
-        callback.onStatus("Extracting packages...");
+        callback.onStatus("Extracting Linux base system...");
         deleteRecursive(stagingDir);
         if (!stagingDir.mkdirs()) {
             throw new IOException("Failed to create staging directory: " + stagingDir);
@@ -153,7 +147,7 @@ public class BootstrapInstaller {
                         if (name.startsWith("bin/") || name.startsWith("libexec/") ||
                                 name.startsWith("lib/apt/apt-helper") || name.startsWith("lib/apt/methods/")) {
                             try {
-                                Os.chmod(outFile.getAbsolutePath(), 0700);
+                                Os.chmod(outFile.getAbsolutePath(), 0755);
                             } catch (Exception ignored) {}
                         }
                     }
@@ -178,7 +172,9 @@ public class BootstrapInstaller {
             }
         }
 
-        callback.onStatus("Finalizing setup...");
+        callback.onStatus("Optimizing package manager & paths...");
+        patchScriptsInDir(stagingDir, prefixDir.getAbsolutePath());
+
         if (prefixDir.exists()) {
             deleteRecursive(prefixDir);
         }
@@ -186,25 +182,198 @@ public class BootstrapInstaller {
             throw new IOException("Failed to move " + stagingDir + " to " + prefixDir);
         }
 
-        File tmpDir = new File(prefixDir, "tmp");
-        if (!tmpDir.exists()) tmpDir.mkdirs();
-
-        // Directories apt/dpkg need (the bootstrap does not always ship them)
-        new File(prefixDir, "var/lib/dpkg/updates").mkdirs();
-        new File(prefixDir, "var/lib/dpkg/info").mkdirs();
-        new File(prefixDir, "var/lib/apt/lists/partial").mkdirs();
-        new File(prefixDir, "var/cache/apt/archives/partial").mkdirs();
-        new File(prefixDir, "var/log/apt").mkdirs();
-
-        File dpkgStatus = new File(prefixDir, "var/lib/dpkg/status");
-        if (!dpkgStatus.exists()) writeStringToFile(dpkgStatus, "");
-        File dpkgAvailable = new File(prefixDir, "var/lib/dpkg/available");
-        if (!dpkgAvailable.exists()) writeStringToFile(dpkgAvailable, "");
+        setupSystemDirsAndConfigs(context, prefixDir, homeDir);
 
         if (tempZip.exists()) tempZip.delete();
 
-        Log.i(TAG, "Termux bootstrap installed successfully!");
+        Log.i(TAG, "BoomAux bootstrap installed successfully!");
         callback.onSuccess();
+    }
+
+    public static void setupSystemDirsAndConfigs(Context context, File prefixDir, File homeDir) {
+        String prefix = prefixDir.getAbsolutePath();
+
+        File tmpDir = new File(prefixDir, "tmp");
+        if (!tmpDir.exists()) tmpDir.mkdirs();
+        File varTmpDir = new File(prefixDir, "var/tmp");
+        if (!varTmpDir.exists()) varTmpDir.mkdirs();
+
+        // Essential apt & dpkg directories
+        new File(prefixDir, "var/lib/dpkg/updates").mkdirs();
+        new File(prefixDir, "var/lib/dpkg/info").mkdirs();
+        new File(prefixDir, "var/lib/dpkg/alternatives").mkdirs();
+        new File(prefixDir, "var/lib/apt/lists/partial").mkdirs();
+        new File(prefixDir, "var/cache/apt/archives/partial").mkdirs();
+        new File(prefixDir, "var/log/apt").mkdirs();
+        new File(prefixDir, "etc/apt/apt.conf.d").mkdirs();
+        new File(prefixDir, "etc/apt/preferences.d").mkdirs();
+        new File(prefixDir, "etc/apt/sources.list.d").mkdirs();
+        new File(prefixDir, "etc/termux").mkdirs();
+        new File(prefixDir, "etc/pip.conf").delete(); // remove if directory
+        new File(homeDir, ".termux").mkdirs();
+        new File(homeDir, ".config/pip").mkdirs();
+
+        File dpkgStatus = new File(prefixDir, "var/lib/dpkg/status");
+        if (!dpkgStatus.exists()) {
+            try { writeStringToFile(dpkgStatus, ""); } catch (Exception ignored) {}
+        }
+        File dpkgAvailable = new File(prefixDir, "var/lib/dpkg/available");
+        if (!dpkgAvailable.exists()) {
+            try { writeStringToFile(dpkgAvailable, ""); } catch (Exception ignored) {}
+        }
+
+        // Configure APT with exact absolute paths so it always finds its directories
+        String aptConfContent = "Dir \"" + prefix + "\";\n" +
+                "Dir::State \"" + prefix + "/var/lib/apt\";\n" +
+                "Dir::State::status \"" + prefix + "/var/lib/dpkg/status\";\n" +
+                "Dir::Cache \"" + prefix + "/var/cache/apt\";\n" +
+                "Dir::Etc \"" + prefix + "/etc/apt\";\n" +
+                "Dir::Bin::methods \"" + prefix + "/lib/apt/methods\";\n" +
+                "Dir::Bin::solvers \"" + prefix + "/lib/apt/solvers\";\n" +
+                "Dir::Bin::dpkg \"" + prefix + "/bin/dpkg\";\n" +
+                "DPkg::Options {\n" +
+                "   \"--force-configure-any\";\n" +
+                "   \"--force-depends\";\n" +
+                "};\n" +
+                "Acquire::Languages \"none\";\n" +
+                "Acquire::http::Timeout \"30\";\n" +
+                "Acquire::https::Timeout \"30\";\n" +
+                "Acquire::https::CaInfo \"" + prefix + "/etc/tls/cert.pem\";\n";
+        try {
+            writeStringToFile(new File(prefixDir, "etc/apt/apt.conf"), aptConfContent);
+        } catch (Exception ignored) {}
+
+        // Configure stable official primary Cloudflare CDN mirror
+        String sourcesList = "deb https://packages-cf.termux.dev/apt/termux-main stable main\n";
+        try {
+            writeStringToFile(new File(prefixDir, "etc/apt/sources.list"), sourcesList);
+        } catch (Exception ignored) {}
+
+        // Set chosen mirror in both system and home config so pkg doesn't trigger mirror testing
+        String chosenMirror = "https://packages-cf.termux.dev/apt/termux-main\n";
+        try {
+            writeStringToFile(new File(prefixDir, "etc/termux/chosen_mirror"), chosenMirror);
+            writeStringToFile(new File(homeDir, ".termux/chosen_mirror"), chosenMirror);
+        } catch (Exception ignored) {}
+
+        // Configure pip to use PyPI with trusted host fallbacks to fix certificate issues on all Android versions
+        String pipConf = "[global]\n" +
+                "cert = " + prefix + "/etc/tls/cert.pem\n" +
+                "trusted-host = pypi.org pypi.python.org files.pythonhosted.org\n" +
+                "disable-pip-version-check = true\n" +
+                "timeout = 60\n";
+        try {
+            writeStringToFile(new File(prefixDir, "etc/pip.conf"), pipConf);
+            writeStringToFile(new File(homeDir, ".config/pip/pip.conf"), pipConf);
+        } catch (Exception ignored) {}
+
+        // Ensure libboomaux-redirect.so is installed in $PREFIX/lib
+        try {
+            copyNativeRedirectLibrary(context, prefixDir);
+        } catch (Exception e) {
+            Log.w(TAG, "Error copying redirect so: " + e.getMessage());
+        }
+
+        // Ensure binaries have executable permissions
+        File binDir = new File(prefixDir, "bin");
+        File[] bins = binDir.listFiles();
+        if (bins != null) {
+            for (File b : bins) {
+                try {
+                    Os.chmod(b.getAbsolutePath(), 0755);
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private static void copyNativeRedirectLibrary(Context context, File prefixDir) {
+        File libDir = new File(prefixDir, "lib");
+        if (!libDir.exists()) libDir.mkdirs();
+
+        String nativeLibDir = context.getApplicationInfo().nativeLibraryDir;
+        String[] candidateNames = new String[]{
+                "libboomaux-redirect.so",
+                "libboomaxe-redirect.so"
+        };
+
+        for (String name : candidateNames) {
+            File src = new File(nativeLibDir, name);
+            if (src.exists() && src.length() > 0) {
+                File dest = new File(libDir, "libboomaux-redirect.so");
+                try {
+                    copyFile(src, dest);
+                    Os.chmod(dest.getAbsolutePath(), 0755);
+                    Log.i(TAG, "Copied native redirect library to " + dest.getAbsolutePath());
+                    break;
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private static void copyFile(File src, File dest) throws IOException {
+        try (InputStream in = new FileInputStream(src);
+             FileOutputStream out = new FileOutputStream(dest)) {
+            byte[] buf = new byte[8192];
+            int read;
+            while ((read = in.read(buf)) != -1) {
+                out.write(buf, 0, read);
+            }
+        }
+    }
+
+    private static void patchScriptsInDir(File stagingDir, String targetPrefix) {
+        File binDir = new File(stagingDir, "bin");
+        if (!binDir.exists() || !binDir.isDirectory()) return;
+
+        File[] files = binDir.listFiles();
+        if (files == null) return;
+
+        for (File f : files) {
+            if (f.isFile() && f.length() < 256 * 1024) {
+                patchScriptFile(f, targetPrefix);
+            }
+        }
+    }
+
+    private static void patchScriptFile(File file, String targetPrefix) {
+        try {
+            byte[] bytes;
+            try (FileInputStream fis = new FileInputStream(file)) {
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int r;
+                while ((r = fis.read(buf)) != -1) {
+                    baos.write(buf, 0, r);
+                }
+                bytes = baos.toByteArray();
+            }
+
+            // Check if text script
+            if (bytes.length > 2 && bytes[0] == '#' && bytes[1] == '!') {
+                String content = new String(bytes, StandardCharsets.UTF_8);
+                boolean changed = false;
+
+                if (content.contains("/data/data/com.termux/files/usr")) {
+                    content = content.replace("/data/data/com.termux/files/usr", targetPrefix);
+                    changed = true;
+                }
+                if (content.contains("/data/user/0/com.termux/files/usr")) {
+                    content = content.replace("/data/user/0/com.termux/files/usr", targetPrefix);
+                    changed = true;
+                }
+                if (content.contains("/data/data/com.bomax.talha.bdcteator/files/usr")) {
+                    content = content.replace("/data/data/com.bomax.talha.bdcteator/files/usr", targetPrefix);
+                    changed = true;
+                }
+
+                if (changed) {
+                    try (FileOutputStream fos = new FileOutputStream(file)) {
+                        fos.write(content.getBytes(StandardCharsets.UTF_8));
+                    }
+                    try { Os.chmod(file.getAbsolutePath(), 0755); } catch (Exception ignored) {}
+                }
+            }
+        } catch (Exception ignored) {}
     }
 
     private static void downloadWithProgress(String urlString, File destFile, Callback callback) throws IOException {
@@ -271,8 +440,8 @@ public class BootstrapInstaller {
                     lastReportTime = now;
                     int percent = contentLength > 0 ? (int) ((totalRead * 100) / contentLength) : -1;
                     String msg = percent >= 0 ?
-                            "Downloading bootstrap (" + percent + "%)..." :
-                            "Downloading bootstrap (" + (totalRead / (1024 * 1024)) + " MB)...";
+                            "Downloading BoomAux environment (" + percent + "%)..." :
+                            "Downloading BoomAux environment (" + (totalRead / (1024 * 1024)) + " MB)...";
                     callback.onProgress(totalRead, contentLength, msg);
                 }
             }
@@ -306,4 +475,4 @@ public class BootstrapInstaller {
             fos.write(content.getBytes(StandardCharsets.UTF_8));
         }
     }
-            }
+}

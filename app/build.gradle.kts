@@ -7,7 +7,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.termux"
+        applicationId = "com.boomaux.boom.bdcreator"
         minSdk = 24
         // Keep targetSdk at 28 or lower if you later want to exec binaries from the app data
         // directory (Android 10+ blocks that for targetSdk >= 29). /system/bin/sh works either way.
