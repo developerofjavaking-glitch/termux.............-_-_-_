@@ -1,4 +1,4 @@
-name: Build BoomAux APK
+name: Build APK
 
 on:
   push:
@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -21,7 +21,15 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.8'
+          gradle-version: '9.3.1'
+
+      - name: Create .env file (Gemini API key)
+        run: |
+          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
+          else
+            echo "GEMINI_API_KEY=dummy_key_for_ci_build" > .env
+          fi
 
       - name: Generate debug keystore
         run: |
@@ -31,43 +39,13 @@ jobs:
             -alias androiddebugkey \
             -keypass android \
             -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=BoomAux Debug,O=BoomAux,C=US"
+            -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Build Debug APK
+      - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
-      - name: Upload Debug APK Artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: boomaux-debug-apk
+          name: app-debug-apk
           path: app/build/outputs/apk/debug/*.apk
-
-      - name: Build and Sign Release APK (if secrets provided)
-        if: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
-        env:
-          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
-          gradle assembleRelease --stacktrace
-          
-          # Sign release APK if unsigned
-          BUILD_TOOLS_DIR=$(ls -d /usr/local/lib/android/sdk/build-tools/* | tail -n 1)
-          APK_FILE=$(ls app/build/outputs/apk/release/*-unsigned.apk 2>/dev/null || ls app/build/outputs/apk/release/*.apk | head -n 1)
-          if [ -f "$APK_FILE" ]; then
-            $BUILD_TOOLS_DIR/apksigner sign --ks release.keystore \
-              --ks-pass pass:"$KEYSTORE_PASSWORD" \
-              --ks-key-alias "$KEY_ALIAS" \
-              --key-pass pass:"$KEY_PASSWORD" \
-              --out app/build/outputs/apk/release/boomaux-release-signed.apk \
-              "$APK_FILE"
-          fi
-
-      - name: Upload Signed Release APK Artifact
-        if: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: boomaux-release-signed-apk
-          path: app/build/outputs/apk/release/*signed*.apk
