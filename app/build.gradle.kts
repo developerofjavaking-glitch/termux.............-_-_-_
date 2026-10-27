@@ -7,7 +7,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.boomaux.boom.bdcreator"
+        applicationId = "com.termux"
         minSdk = 24
         // Keep targetSdk at 28 or lower if you later want to exec binaries from the app data
         // directory (Android 10+ blocks that for targetSdk >= 29). /system/bin/sh works either way.
@@ -56,4 +56,5 @@ dependencies {
     implementation(project(":terminal-view"))
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core:1.13.1")
+    implementation("com.google.android.material:material:1.12.0")
 }

@@ -1,6 +1,7 @@
 package com.example.termuxlite;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.system.Os;
 import android.util.Log;
@@ -30,14 +31,17 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 /**
- * Installs the official Termux bootstrap Linux environment for BoomAux.
- *
- * Configures apt, dpkg, pkg, pip, and SSL certificates so any package or
- * Python library can be installed directly without path or certificate issues.
+ * Installs and configures the official Termux Linux bootstrap environment for BoomAux.
+ * Supports download progress reporting (% and MB), mirror selection, and clean resets.
  */
 public class BootstrapInstaller {
 
     private static final String TAG = "BoomAuxBootstrap";
+
+    public static final String MIRROR_CLOUDFLARE = "https://packages-cf.termux.dev/apt/termux-main";
+    public static final String MIRROR_OFFICIAL = "https://packages.termux.dev/apt/termux-main";
+    public static final String MIRROR_TSINGHUA = "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main";
+    public static final String MIRROR_BFSU = "https://mirrors.bfsu.edu.cn/termux/apt/termux-main";
 
     public interface Callback {
         void onProgress(long current, long total, String message);
@@ -74,6 +78,25 @@ public class BootstrapInstaller {
         }).start();
     }
 
+    public static void resetEnvironment(Context context, boolean wipeHome, Callback callback) {
+        new Thread(() -> {
+            try {
+                callback.onStatus("Resetting Linux environment...");
+                File filesDir = context.getFilesDir();
+                deleteRecursive(new File(filesDir, "usr"));
+                deleteRecursive(new File(filesDir, "usr-staging"));
+                if (wipeHome) {
+                    deleteRecursive(new File(filesDir, "home"));
+                    new File(filesDir, "home").mkdirs();
+                }
+                install(context, callback);
+            } catch (Exception e) {
+                Log.e(TAG, "Environment reset failed", e);
+                callback.onError(e.getMessage() != null ? e.getMessage() : e.toString());
+            }
+        }).start();
+    }
+
     public static void install(Context context, Callback callback) throws Exception {
         String arch = getArch();
         Log.i(TAG, "Starting BoomAux bootstrap installation for architecture: " + arch);
@@ -90,7 +113,7 @@ public class BootstrapInstaller {
         boolean downloaded = false;
         Exception lastException = null;
 
-        // Check for locally placed bootstrap file first (offline / manual fallback)
+        // 1. Check local candidates
         File[] localCandidates = new File[]{
                 new File(context.getExternalFilesDir(null), "bootstrap-" + arch + ".zip"),
                 new File("/sdcard/Download/bootstrap-" + arch + ".zip"),
@@ -108,27 +131,23 @@ public class BootstrapInstaller {
             }
         }
 
-        // Multiple fast global CDN mirrors with SSL resilience
+        // 2. Download from high-speed CDN mirrors
         if (!downloaded) {
             String[] downloadUrls = new String[]{
-                    // Cloudflare high-speed CDN mirror (accessible worldwide without throttling)
                     "https://gh-proxy.com/https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip",
-                    // Official direct GitHub release asset
                     "https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip",
-                    // Latest release endpoint
                     "https://github.com/termux/termux-packages/releases/latest/download/bootstrap-" + arch + ".zip",
-                    // Alternative CDN mirror
                     "https://ghproxy.net/https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip"
             };
 
             for (String urlStr : downloadUrls) {
                 try {
-                    callback.onStatus("Connecting to BoomAux package servers...");
+                    callback.onStatus("Connecting to BoomAux package mirrors...");
                     downloadWithProgress(urlStr, tempZip, callback);
                     downloaded = true;
                     break;
                 } catch (Exception e) {
-                    Log.w(TAG, "Failed downloading from: " + urlStr, e);
+                    Log.w(TAG, "Download attempt failed from: " + urlStr, e);
                     lastException = e;
                     if (tempZip.exists()) tempZip.delete();
                 }
@@ -136,10 +155,11 @@ public class BootstrapInstaller {
         }
 
         if (!downloaded || !tempZip.exists() || tempZip.length() == 0) {
-            throw new IOException("Failed to download bootstrap archive: " +
-                    (lastException != null ? lastException.getMessage() : "network connection failed"));
+            throw new IOException("Failed downloading bootstrap: " +
+                    (lastException != null ? lastException.getMessage() : "Network error"));
         }
 
+        // 3. Extract to staging directory
         callback.onStatus("Extracting Linux base system...");
         deleteRecursive(stagingDir);
         if (!stagingDir.mkdirs()) {
@@ -189,26 +209,12 @@ public class BootstrapInstaller {
             }
         }
 
-        callback.onStatus("Creating symlinks...");
+        // 4. Create symlinks
+        callback.onStatus("Configuring symbolic links...");
         for (Pair<String, String> link : symlinks) {
             String target = link.first;
             String relPath = link.second;
             if (relPath.startsWith("./")) relPath = relPath.substring(2);
-
-            // Rewrite target if it points to hardcoded package paths
-            if (target.contains("/data/data/com.termux/files/usr")) {
-                target = target.replace("/data/data/com.termux/files/usr", prefixDir.getAbsolutePath());
-            } else if (target.contains("/data/user/0/com.termux/files/usr")) {
-                target = target.replace("/data/user/0/com.termux/files/usr", prefixDir.getAbsolutePath());
-            } else if (target.contains("/data/data/com.bomax.talha.bdcteator/files/usr")) {
-                target = target.replace("/data/data/com.bomax.talha.bdcteator/files/usr", prefixDir.getAbsolutePath());
-            } else if (target.contains("/data/user/0/com.bomax.talha.bdcteator/files/usr")) {
-                target = target.replace("/data/user/0/com.bomax.talha.bdcteator/files/usr", prefixDir.getAbsolutePath());
-            } else if (target.contains("/data/data/com.termux/files")) {
-                target = target.replace("/data/data/com.termux/files", filesDir.getAbsolutePath());
-            } else if (target.contains("/data/user/0/com.termux/files")) {
-                target = target.replace("/data/user/0/com.termux/files", filesDir.getAbsolutePath());
-            }
 
             File linkFile = new File(stagingDir, relPath);
             File parent = linkFile.getParentFile();
@@ -217,25 +223,24 @@ public class BootstrapInstaller {
             try {
                 Os.symlink(target, linkFile.getAbsolutePath());
             } catch (Exception e) {
-                Log.w(TAG, "Symlink creation failed for: " + linkFile + " -> " + target, e);
+                Log.w(TAG, "Symlink creation: " + linkFile + " -> " + target, e);
             }
         }
 
+        // 5. Finalize directory placement
         callback.onStatus("Optimizing package manager & paths...");
-        patchScriptsInDir(stagingDir, prefixDir.getAbsolutePath());
-
         if (prefixDir.exists()) {
             deleteRecursive(prefixDir);
         }
         if (!stagingDir.renameTo(prefixDir)) {
-            throw new IOException("Failed to move " + stagingDir + " to " + prefixDir);
+            throw new IOException("Failed to rename " + stagingDir + " to " + prefixDir);
         }
 
         setupSystemDirsAndConfigs(context, prefixDir, homeDir);
 
         if (tempZip.exists()) tempZip.delete();
 
-        Log.i(TAG, "BoomAux bootstrap installed successfully!");
+        Log.i(TAG, "BoomAux bootstrap successfully installed!");
         callback.onSuccess();
     }
 
@@ -258,7 +263,6 @@ public class BootstrapInstaller {
         new File(prefixDir, "etc/apt/preferences.d").mkdirs();
         new File(prefixDir, "etc/apt/sources.list.d").mkdirs();
         new File(prefixDir, "etc/termux").mkdirs();
-        new File(prefixDir, "etc/pip.conf").delete();
         new File(homeDir, ".termux").mkdirs();
         new File(homeDir, ".config/pip").mkdirs();
 
@@ -271,7 +275,7 @@ public class BootstrapInstaller {
             try { writeStringToFile(dpkgAvailable, ""); } catch (Exception ignored) {}
         }
 
-        // Configure APT with exact absolute paths so it always finds its directories
+        // Configure APT with exact absolute paths
         String aptConfContent = "Dir \"" + prefix + "\";\n" +
                 "Dir::State \"" + prefix + "/var/lib/apt\";\n" +
                 "Dir::State::status \"" + prefix + "/var/lib/dpkg/status\";\n" +
@@ -296,7 +300,7 @@ public class BootstrapInstaller {
             writeStringToFile(new File(prefixDir, "etc/apt/apt.conf"), aptConfContent);
         } catch (Exception ignored) {}
 
-        // Configure curlrc to allow seamless connectivity even with older Android system certificates
+        // Configure curlrc
         String curlrc = "insecure\n" +
                 "capath = " + prefix + "/etc/ssl/certs\n" +
                 "cacert = " + prefix + "/etc/tls/cert.pem\n";
@@ -305,36 +309,10 @@ public class BootstrapInstaller {
             writeStringToFile(new File(homeDir, ".curlrc"), curlrc);
         } catch (Exception ignored) {}
 
-        // Configure stable official primary Cloudflare CDN mirror
-        String sourcesList = "deb https://packages-cf.termux.dev/apt/termux-main stable main\n";
-        try {
-            writeStringToFile(new File(prefixDir, "etc/apt/sources.list"), sourcesList);
-        } catch (Exception ignored) {}
-
-        // Set chosen mirror in both system and home config so pkg doesn't trigger mirror testing
-        String chosenMirror = "https://packages-cf.termux.dev/apt/termux-main\n";
-        try {
-            writeStringToFile(new File(prefixDir, "etc/termux/chosen_mirror"), chosenMirror);
-            writeStringToFile(new File(homeDir, ".termux/chosen_mirror"), chosenMirror);
-        } catch (Exception ignored) {}
-
-        // Configure pip to use PyPI with trusted host fallbacks to fix certificate issues on all Android versions
-        String pipConf = "[global]\n" +
-                "cert = " + prefix + "/etc/tls/cert.pem\n" +
-                "trusted-host = pypi.org pypi.python.org files.pythonhosted.org\n" +
-                "disable-pip-version-check = true\n" +
-                "timeout = 60\n";
-        try {
-            writeStringToFile(new File(prefixDir, "etc/pip.conf"), pipConf);
-            writeStringToFile(new File(homeDir, ".config/pip/pip.conf"), pipConf);
-        } catch (Exception ignored) {}
-
-        // Ensure libboomaux-redirect.so is installed in $PREFIX/lib
-        try {
-            copyNativeRedirectLibrary(context, prefixDir);
-        } catch (Exception e) {
-            Log.w(TAG, "Error copying redirect so: " + e.getMessage());
-        }
+        // Read selected mirror preference or default to Cloudflare CDN
+        SharedPreferences prefs = context.getSharedPreferences("boomaux_prefs", Context.MODE_PRIVATE);
+        String mirrorUrl = prefs.getString("package_mirror", MIRROR_CLOUDFLARE);
+        applyMirrorConfig(prefixDir, homeDir, mirrorUrl);
 
         // Ensure binaries have executable permissions
         File binDir = new File(prefixDir, "bin");
@@ -348,105 +326,21 @@ public class BootstrapInstaller {
         }
     }
 
-    private static void copyNativeRedirectLibrary(Context context, File prefixDir) {
-        File libDir = new File(prefixDir, "lib");
-        if (!libDir.exists()) libDir.mkdirs();
-
-        String nativeLibDir = context.getApplicationInfo().nativeLibraryDir;
-        String[] candidateNames = new String[]{
-                "libboomaux-redirect.so",
-                "libboomaxe-redirect.so"
-        };
-
-        for (String name : candidateNames) {
-            File src = new File(nativeLibDir, name);
-            if (src.exists() && src.length() > 0) {
-                File dest = new File(libDir, "libboomaux-redirect.so");
-                try {
-                    copyFile(src, dest);
-                    Os.chmod(dest.getAbsolutePath(), 0755);
-                    Log.i(TAG, "Copied native redirect library to " + dest.getAbsolutePath());
-                    break;
-                } catch (Exception ignored) {}
-            }
+    public static void updateMirror(Context context, String mirrorUrl) {
+        File filesDir = context.getFilesDir();
+        File prefixDir = new File(filesDir, "usr");
+        File homeDir = new File(filesDir, "home");
+        if (prefixDir.exists()) {
+            applyMirrorConfig(prefixDir, homeDir, mirrorUrl);
         }
     }
 
-    private static void copyFile(File src, File dest) throws IOException {
-        try (InputStream in = new FileInputStream(src);
-             FileOutputStream out = new FileOutputStream(dest)) {
-            byte[] buf = new byte[8192];
-            int read;
-            while ((read = in.read(buf)) != -1) {
-                out.write(buf, 0, read);
-            }
-        }
-    }
-
-    private static void patchScriptsInDir(File dir, String targetPrefix) {
-        if (!dir.exists() || !dir.isDirectory()) return;
-
-        File[] files = dir.listFiles();
-        if (files == null) return;
-
-        for (File f : files) {
-            if (f.isDirectory()) {
-                patchScriptsInDir(f, targetPrefix);
-            } else if (f.isFile() && f.length() < 256 * 1024) {
-                patchScriptFile(f, targetPrefix);
-            }
-        }
-    }
-
-    private static void patchScriptFile(File file, String targetPrefix) {
+    private static void applyMirrorConfig(File prefixDir, File homeDir, String mirrorUrl) {
+        String sourcesList = "deb " + mirrorUrl + " stable main\n";
         try {
-            byte[] bytes;
-            try (FileInputStream fis = new FileInputStream(file)) {
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                byte[] buf = new byte[4096];
-                int r;
-                while ((r = fis.read(buf)) != -1) {
-                    baos.write(buf, 0, r);
-                }
-                bytes = baos.toByteArray();
-            }
-
-            if (bytes.length > 2 && bytes[0] == '#' && bytes[1] == '!') {
-                String content = new String(bytes, StandardCharsets.UTF_8);
-                boolean changed = false;
-
-                if (content.contains("/data/data/com.termux/files/usr")) {
-                    content = content.replace("/data/data/com.termux/files/usr", targetPrefix);
-                    changed = true;
-                }
-                if (content.contains("/data/user/0/com.termux/files/usr")) {
-                    content = content.replace("/data/user/0/com.termux/files/usr", targetPrefix);
-                    changed = true;
-                }
-                if (content.contains("/data/data/com.bomax.talha.bdcteator/files/usr")) {
-                    content = content.replace("/data/data/com.bomax.talha.bdcteator/files/usr", targetPrefix);
-                    changed = true;
-                }
-                if (content.contains("/data/user/0/com.bomax.talha.bdcteator/files/usr")) {
-                    content = content.replace("/data/user/0/com.bomax.talha.bdcteator/files/usr", targetPrefix);
-                    changed = true;
-                }
-                if (content.contains("/data/data/com.bomax.talha.bdcreator/files/usr")) {
-                    content = content.replace("/data/data/com.bomax.talha.bdcreator/files/usr", targetPrefix);
-                    changed = true;
-                }
-                if (content.contains("/data/user/0/com.bomax.talha.bdcreator/files/usr")) {
-                    content = content.replace("/data/user/0/com.bomax.talha.bdcreator/files/usr", targetPrefix);
-                    changed = true;
-                }
-
-                if (changed) {
-                    try (FileOutputStream fos = new FileOutputStream(file)) {
-                        fos.write(content.getBytes(StandardCharsets.UTF_8));
-                    }
-                    try { Os.chmod(file.getAbsolutePath(), 0755); } catch (Exception ignored) {}
-                }
-            }
+            writeStringToFile(new File(prefixDir, "etc/apt/sources.list"), sourcesList);
+            writeStringToFile(new File(prefixDir, "etc/termux/chosen_mirror"), mirrorUrl + "\n");
+            writeStringToFile(new File(homeDir, ".termux/chosen_mirror"), mirrorUrl + "\n");
         } catch (Exception ignored) {}
     }
 
@@ -540,12 +434,17 @@ public class BootstrapInstaller {
                 totalRead += read;
 
                 long now = System.currentTimeMillis();
-                if (now - lastReportTime > 250) {
+                if (now - lastReportTime > 200) {
                     lastReportTime = now;
+                    double currentMB = totalRead / (1024.0 * 1024.0);
                     int percent = contentLength > 0 ? (int) ((totalRead * 100) / contentLength) : -1;
-                    String msg = percent >= 0 ?
-                            "Downloading BoomAux environment (" + percent + "%)..." :
-                            "Downloading BoomAux environment (" + (totalRead / (1024 * 1024)) + " MB)...";
+                    String msg;
+                    if (contentLength > 0) {
+                        double totalMB = contentLength / (1024.0 * 1024.0);
+                        msg = String.format(java.util.Locale.US, "Downloading BoomAux: %.1f MB / %.1f MB (%d%%)", currentMB, totalMB, percent);
+                    } else {
+                        msg = String.format(java.util.Locale.US, "Downloading BoomAux: %.1f MB...", currentMB);
+                    }
                     callback.onProgress(totalRead, contentLength, msg);
                 }
             }
@@ -570,6 +469,17 @@ public class BootstrapInstaller {
             }
         }
         fileOrDirectory.delete();
+    }
+
+    private static void copyFile(File src, File dest) throws IOException {
+        try (InputStream in = new FileInputStream(src);
+             FileOutputStream out = new FileOutputStream(dest)) {
+            byte[] buf = new byte[8192];
+            int read;
+            while ((read = in.read(buf)) != -1) {
+                out.write(buf, 0, read);
+            }
+        }
     }
 
     private static void writeStringToFile(File file, String content) throws IOException {

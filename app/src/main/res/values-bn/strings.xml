@@ -1,0 +1,146 @@
+<resources>
+    <string name="app_name">BoomAux</string>
+
+    <!-- General Actions -->
+    <string name="action_ok">ঠিক আছে</string>
+    <string name="action_cancel">বাতিল</string>
+    <string name="action_retry">পুনরায় চেষ্টা করুন</string>
+    <string name="action_close">বন্ধ করুন</string>
+    <string name="action_exit">বের হন</string>
+    <string name="action_save">সংরক্ষণ করুন</string>
+    <string name="action_yes">হ্যাঁ</string>
+    <string name="action_no">না</string>
+    <string name="action_open">খুলুন</string>
+    <string name="action_share">শেয়ার করুন</string>
+
+    <!-- Sessions & Terminal Toolbar -->
+    <string name="btn_new_session">নতুন সেশন</string>
+    <string name="btn_close_session">সেশন বন্ধ</string>
+    <string name="btn_prev_session">পূর্ববর্তী</string>
+    <string name="btn_next_session">পরবর্তী</string>
+    <string name="session_rename_title">সেশনের নাম পরিবর্তন</string>
+    <string name="session_rename_hint">নতুন সেশনের নাম লিখুন</string>
+    <string name="session_count_format">%1$d/%2$d %3$s</string>
+    <string name="menu_settings">সেটিংস</string>
+    <string name="menu_folder_shortcuts">ফোল্ডার শর্টকাট</string>
+    <string name="wakelock_active">WakeLock: সক্রিয়</string>
+    <string name="wakelock_inactive">WakeLock: নিষ্ক্রিয়</string>
+    <string name="wakelock_toggle_on">WakeLock চালু হয়েছে (CPU স্লিপে যাবে না)</string>
+    <string name="wakelock_toggle_off">WakeLock বন্ধ করা হয়েছে</string>
+
+    <!-- Terminal Context Menu -->
+    <string name="terminal_menu_title">টার্মিনাল অপশন</string>
+    <string name="menu_copy_all">সব কপি করুন</string>
+    <string name="menu_paste">পেস্ট করুন</string>
+    <string name="menu_open_url">URL খুলুন: %1$s</string>
+    <string name="menu_rename_session">সেশনের নাম বদলান</string>
+    <string name="menu_reset_terminal">টার্মিনাল রিসেট</string>
+    <string name="menu_kill_process">প্রসেস বন্ধ করুন (Ctrl+C)</string>
+    <string name="copied_to_clipboard">ক্লিপবোর্ডে কপি করা হয়েছে</string>
+    <string name="clipboard_empty">ক্লিপবোর্ড খালি</string>
+
+    <!-- Bootstrap Installer -->
+    <string name="bootstrap_installing">BoomAux লিনাক্স প্যাকেজ ইনস্টল হচ্ছে (pkg ও pip এর জন্য আবশ্যক)...</string>
+    <string name="bootstrap_download_format">BoomAux ডাউনলোড হচ্ছে: %1$.1f MB / %2$.1f MB (%3$d%%)</string>
+    <string name="bootstrap_download_mb">BoomAux ডাউনলোড হচ্ছে: %1$.1f MB...</string>
+    <string name="bootstrap_connecting">BoomAux সার্ভারের সাথে সংযোগ হচ্ছে...</string>
+    <string name="bootstrap_extracting">লিনাক্স সিস্টেম ফাইল আনপ্যাক হচ্ছে...</string>
+    <string name="bootstrap_symlinks">সিম্বলিক লিঙ্ক তৈরি করা হচ্ছে...</string>
+    <string name="bootstrap_optimizing">প্যাকেজ ম্যানেজার কনফিগার হচ্ছে...</string>
+    <string name="bootstrap_ready">BoomAux লিনাক্স পরিবেশ প্রস্তুত!</string>
+    <string name="bootstrap_error">বুটস্ট্র্যাপ ব্যর্থ হয়েছে: %1$s</string>
+    <string name="bootstrap_retry">আবার চেষ্টা করুন</string>
+
+    <!-- First Run Dialog -->
+    <string name="first_run_dialog_title">দরকারী টুল ইনস্টল করবেন?</string>
+    <string name="first_run_dialog_msg">BoomAux সফলভাবে ইনস্টল হয়েছে। আপনি কি স্বয়ংক্রিয়ভাবে প্যাকেজ আপডেট এবং Python ও Git ইনস্টল করতে চান?</string>
+    <string name="first_run_installing">স্বয়ংক্রিয় প্যাকেজ আপডেট ও পাইথন ইনস্টলেশন শুরু হচ্ছে...</string>
+
+    <!-- Service Notification -->
+    <string name="notification_channel_name">BoomAux ব্যাকগ্রাউন্ড সার্ভিস</string>
+    <string name="notification_channel_desc">ব্যাকগ্রাউন্ডে টার্মিনাল সেশন ও বট প্রসেস চালু রাখে</string>
+    <string name="notification_single_session">১টি সেশন চলছে</string>
+    <string name="notification_multi_sessions">%1$dটি সেশন চলছে</string>
+    <string name="notification_no_sessions">কোনো সক্রিয় সেশন নেই</string>
+    <string name="notification_action_new">নতুন সেশন</string>
+    <string name="notification_action_exit">বের হন</string>
+    <string name="notification_action_wakelock">WakeLock</string>
+
+    <!-- Settings Activity -->
+    <string name="settings_title">BoomAux সেটিংস</string>
+    <string name="settings_category_appearance">চেহারা ও ফন্ট</string>
+    <string name="pref_font_size">ফন্ট সাইজ: %1$d sp</string>
+    <string name="pref_font_family">টার্মিনাল ফন্ট</string>
+    <string name="pref_color_scheme">কালার স্কিম / থিম</string>
+
+    <string name="settings_category_input">ইনপুট ও কীবোর্ড</string>
+    <string name="pref_volume_keys">ভলিউম কী Ctrl / Alt হিসেবে ব্যবহার</string>
+    <string name="pref_volume_keys_summary">Vol Up দিয়ে Ctrl, Vol Down দিয়ে Alt টগল হবে</string>
+    <string name="pref_vibrate_on_bell">টার্মিনাল বেলে ভাইব্রেশন</string>
+    <string name="pref_vibrate_on_bell_summary">বেল বাজলে সামান্য ভাইব্রেশন হবে</string>
+    <string name="pref_back_action">ব্যাক বাটনের আচরণ</string>
+    <string name="back_action_escape">ESC কী পাঠাবে</string>
+    <string name="back_action_close_session">বর্তমান সেশন বন্ধ করবে</string>
+    <string name="back_action_minimize">ব্যাকগ্রাউন্ডে মিনিমাইজ করবে</string>
+
+    <string name="settings_category_background">ব্যাকগ্রাউন্ড ও বট চালানো</string>
+    <string name="pref_wakelock_default">ডিফল্টভাবে WakeLock চালু রাখুন</string>
+    <string name="pref_wakelock_default_summary">স্ক্রিন বন্ধ থাকলেও CPU সজাগ রাখবে, ফলে Python/বট ফ্রিজ হবে না</string>
+    <string name="pref_boot_auto_start">ফোন চালুর পর অটো-স্টার্ট</string>
+    <string name="pref_boot_auto_start_summary">ডিভাইস রিস্টার্ট হলে BoomAux সার্ভিস স্বয়ংক্রিয় চালু হবে</string>
+    <string name="pref_boot_command">অটো-স্টার্ট স্ক্রিপ্ট / কমান্ড</string>
+    <string name="pref_boot_command_hint">যেমন ~/start_bot.sh বা python ~/bot.py</string>
+    <string name="pref_battery_optimization">ব্যাটারি অপ্টিমাইজেশন ছাড়</string>
+    <string name="pref_battery_optimization_summary">Android ব্যাকগ্রাউন্ড কিলিং থেকে অব্যাহতি চাইতে ট্যাপ করুন</string>
+    <string name="battery_already_optimized">BoomAux-এর জন্য ব্যাটারি অপ্টিমাইজেশন ইতিমধ্যে বন্ধ আছে</string>
+
+    <string name="settings_category_packages">প্যাকেজ ম্যানেজার ও মিরর</string>
+    <string name="pref_mirror">প্যাকেজ রিপোজিটরি মিরর</string>
+    <string name="pref_reset_env">লিনাক্স পরিবেশ রিসেট করুন</string>
+    <string name="pref_reset_env_summary">পরিষ্কার বুটস্ট্র্যাপ পুনরায় ইনস্টল করবে (home ফোল্ডার রাখার সুযোগসহ)</string>
+    <string name="reset_env_confirm_title">পরিবেশ রিসেট করবেন?</string>
+    <string name="reset_env_confirm_msg">এটি $PREFIX (usr) মুছে দিয়ে সম্পূর্ণ নতুন বুটস্ট্র্যাপ ইনস্টল করবে।</string>
+    <string name="reset_env_wipe_home_checkbox">home ফোল্ডারও মুছুন (সতর্কতা: আপনার ফাইল মুছে যাবে)</string>
+
+    <string name="settings_category_storage">স্টোরেজ ও ব্যাকআপ</string>
+    <string name="pref_setup_storage">স্টোরেজ শর্টকাট তৈরি (termux-setup-storage)</string>
+    <string name="pref_setup_storage_summary">~/storage ফোল্ডারে ফোন স্টোরেজের শর্টকাট তৈরি করে</string>
+    <string name="storage_setup_success">~/storage শর্টকাট সফলভাবে তৈরি হয়েছে!</string>
+    <string name="storage_perm_required">স্টোরেজ লিঙ্ক করার জন্য স্টোরেজ পারমিশন প্রয়োজন</string>
+    <string name="pref_import_file">ফাইল ~/home এ ইমপোর্ট করুন</string>
+    <string name="pref_import_file_summary">ফোন মেমোরি থেকে একটি ফাইল ~/home এ কপি করুন</string>
+    <string name="pref_backup_data">ব্যাকআপ তৈরি করুন</string>
+    <string name="pref_backup_data_summary">~/home এবং প্রয়োজনীয় কনফিগ .zip ফাইলে সেভ করুন</string>
+    <string name="pref_restore_data">ব্যাকআপ রিস্টোর করুন</string>
+    <string name="pref_restore_data_summary">পূর্বে তৈরি করা .zip থেকে ফাইলগুলো রিস্টোর করুন</string>
+    <string name="backup_success">ব্যাকআপ সফলভাবে সংরক্ষণ করা হয়েছে!</string>
+    <string name="restore_success">রিস্টোর সফলভাবে সম্পন্ন হয়েছে!</string>
+    <string name="import_success">ফাইল ~/home এ সফলভাবে আনা হয়েছে!</string>
+
+    <string name="settings_category_stability">ডায়াগনস্টিক ও ক্র্যাশ লগ</string>
+    <string name="pref_share_crash_log">ক্র্যাশ লগ দেখুন / শেয়ার করুন</string>
+    <string name="pref_share_crash_log_summary">সমস্যা খোঁজার জন্য files/crash.log ফাইল পাঠান</string>
+    <string name="no_crash_log">কোনো ক্র্যাশ লগ নেই। সিস্টেম সুস্থ রয়েছে!</string>
+
+    <!-- Font Family Options -->
+    <string name="font_default">সিস্টেম মনোস্পেস</string>
+    <string name="font_jetbrains">JetBrains Mono</string>
+    <string name="font_fira">Fira Code</string>
+
+    <!-- Color Scheme Options -->
+    <string name="theme_default">ডিফল্ট Termux</string>
+    <string name="theme_dracula">Dracula Dark</string>
+    <string name="theme_solarized">Solarized Dark</string>
+    <string name="theme_monokai">Monokai Pro</string>
+    <string name="theme_light">ক্লাসিক লাইট</string>
+
+    <!-- Mirrors -->
+    <string name="mirror_cf">Cloudflare CDN (গ্লোবাল দ্রুতগতি)</string>
+    <string name="mirror_termux">অফিসিয়াল Termux রিপোজিটরি</string>
+    <string name="mirror_tsinghua">সিংহুয়া বিশ্ববিদ্যালয় মিরর</string>
+    <string name="mirror_bfsu">বিএফএসইউ বেইজিং মিরর</string>
+
+    <!-- Storage symlink labels -->
+    <string name="shortcut_add">ফোল্ডার শর্টকাট যোগ করুন</string>
+    <string name="shortcut_hint">পাথ (যেমন ~/my_bot)</string>
+</resources>

@@ -1,3 +1,146 @@
 <resources>
     <string name="app_name">BoomAux</string>
+
+    <!-- General Actions -->
+    <string name="action_ok">OK</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_close">Close</string>
+    <string name="action_exit">Exit</string>
+    <string name="action_save">Save</string>
+    <string name="action_yes">Yes</string>
+    <string name="action_no">No</string>
+    <string name="action_open">Open</string>
+    <string name="action_share">Share</string>
+
+    <!-- Sessions & Terminal Toolbar -->
+    <string name="btn_new_session">New Session</string>
+    <string name="btn_close_session">Close Session</string>
+    <string name="btn_prev_session">Previous</string>
+    <string name="btn_next_session">Next</string>
+    <string name="session_rename_title">Rename Session</string>
+    <string name="session_rename_hint">Enter session name</string>
+    <string name="session_count_format">%1$d/%2$d %3$s</string>
+    <string name="menu_settings">Settings</string>
+    <string name="menu_folder_shortcuts">Folder Shortcuts</string>
+    <string name="wakelock_active">WakeLock: Active</string>
+    <string name="wakelock_inactive">WakeLock: Inactive</string>
+    <string name="wakelock_toggle_on">WakeLock turned ON (CPU will stay awake)</string>
+    <string name="wakelock_toggle_off">WakeLock turned OFF</string>
+
+    <!-- Terminal Context Menu -->
+    <string name="terminal_menu_title">Terminal Options</string>
+    <string name="menu_copy_all">Copy All</string>
+    <string name="menu_paste">Paste</string>
+    <string name="menu_open_url">Open URL: %1$s</string>
+    <string name="menu_rename_session">Rename Session</string>
+    <string name="menu_reset_terminal">Reset Terminal</string>
+    <string name="menu_kill_process">Kill Process (Ctrl+C)</string>
+    <string name="copied_to_clipboard">Copied to clipboard</string>
+    <string name="clipboard_empty">Clipboard is empty</string>
+
+    <!-- Bootstrap Installer -->
+    <string name="bootstrap_installing">Installing BoomAux Linux packages (required for pkg &amp; pip)...</string>
+    <string name="bootstrap_download_format">Downloading BoomAux: %1$.1f MB / %2$.1f MB (%3$d%%)</string>
+    <string name="bootstrap_download_mb">Downloading BoomAux: %1$.1f MB...</string>
+    <string name="bootstrap_connecting">Connecting to BoomAux mirrors...</string>
+    <string name="bootstrap_extracting">Extracting Linux system files...</string>
+    <string name="bootstrap_symlinks">Configuring symbolic links...</string>
+    <string name="bootstrap_optimizing">Optimizing package manager &amp; paths...</string>
+    <string name="bootstrap_ready">BoomAux Linux environment ready!</string>
+    <string name="bootstrap_error">Bootstrap failed: %1$s</string>
+    <string name="bootstrap_retry">Retry Download</string>
+
+    <!-- First Run Dialog -->
+    <string name="first_run_dialog_title">Setup Common Tools?</string>
+    <string name="first_run_dialog_msg">BoomAux base system is installed. Would you like to automatically update packages and install Python and Git now?</string>
+    <string name="first_run_installing">Starting automated package update and tool installation...</string>
+
+    <!-- Service Notification -->
+    <string name="notification_channel_name">BoomAux Terminal Background Service</string>
+    <string name="notification_channel_desc">Keeps Linux terminal sessions and bot processes alive in background</string>
+    <string name="notification_single_session">1 session running</string>
+    <string name="notification_multi_sessions">%1$d sessions running</string>
+    <string name="notification_no_sessions">No active sessions</string>
+    <string name="notification_action_new">New Session</string>
+    <string name="notification_action_exit">Exit</string>
+    <string name="notification_action_wakelock">WakeLock</string>
+
+    <!-- Settings Activity -->
+    <string name="settings_title">BoomAux Settings</string>
+    <string name="settings_category_appearance">Appearance &amp; Font</string>
+    <string name="pref_font_size">Font Size: %1$d sp</string>
+    <string name="pref_font_family">Terminal Font</string>
+    <string name="pref_color_scheme">Color Scheme / Theme</string>
+
+    <string name="settings_category_input">Input &amp; Keyboard</string>
+    <string name="pref_volume_keys">Volume Keys as Ctrl / Alt</string>
+    <string name="pref_volume_keys_summary">Vol Up toggles Ctrl, Vol Down toggles Alt</string>
+    <string name="pref_vibrate_on_bell">Vibrate on Terminal Bell</string>
+    <string name="pref_vibrate_on_bell_summary">Haptic feedback when terminal sounds bell</string>
+    <string name="pref_back_action">Back Button Action</string>
+    <string name="back_action_escape">Send ESC key</string>
+    <string name="back_action_close_session">Close current session</string>
+    <string name="back_action_minimize">Minimize to background</string>
+
+    <string name="settings_category_background">Background &amp; Bot Execution</string>
+    <string name="pref_wakelock_default">Keep WakeLock ON by default</string>
+    <string name="pref_wakelock_default_summary">Prevents CPU sleeping so Python/Telegram bots never freeze</string>
+    <string name="pref_boot_auto_start">Auto-start on Phone Reboot</string>
+    <string name="pref_boot_auto_start_summary">Launch BoomAux service automatically when device boots</string>
+    <string name="pref_boot_command">Auto-start Script / Command</string>
+    <string name="pref_boot_command_hint">e.g. ~/start_bot.sh or python ~/bot.py</string>
+    <string name="pref_battery_optimization">Ignore Battery Optimization</string>
+    <string name="pref_battery_optimization_summary">Request exemption from Android battery throttling</string>
+    <string name="battery_already_optimized">Battery optimization is already disabled for BoomAux</string>
+
+    <string name="settings_category_packages">Package Manager &amp; Mirrors</string>
+    <string name="pref_mirror">Package Repository Mirror</string>
+    <string name="pref_reset_env">Reset Linux Environment</string>
+    <string name="pref_reset_env_summary">Reinstalls clean bootstrap (options to keep or wipe ~/home)</string>
+    <string name="reset_env_confirm_title">Reset Linux Environment?</string>
+    <string name="reset_env_confirm_msg">This will delete $PREFIX (usr) and reinstall the clean bootstrap environment.</string>
+    <string name="reset_env_wipe_home_checkbox">Also delete /home folder (Warning: deletes custom files)</string>
+
+    <string name="settings_category_storage">Storage &amp; Backups</string>
+    <string name="pref_setup_storage">Setup Storage Symlinks (termux-setup-storage)</string>
+    <string name="pref_setup_storage_summary">Creates ~/storage shortcuts to Internal Storage &amp; SD Card</string>
+    <string name="storage_setup_success">~/storage symlinks created successfully!</string>
+    <string name="storage_perm_required">Storage permission is required to link internal storage</string>
+    <string name="pref_import_file">Import File to ~/home</string>
+    <string name="pref_import_file_summary">Copy a file from phone storage into ~/home directory</string>
+    <string name="pref_backup_data">Backup Environment</string>
+    <string name="pref_backup_data_summary">Export ~/home and configuration into a .zip archive</string>
+    <string name="pref_restore_data">Restore Environment</string>
+    <string name="pref_restore_data_summary">Restore ~/home files from a previously created .zip archive</string>
+    <string name="backup_success">Backup saved successfully!</string>
+    <string name="restore_success">Restore completed successfully!</string>
+    <string name="import_success">File imported to ~/home successfully!</string>
+
+    <string name="settings_category_stability">Diagnostics &amp; Stability</string>
+    <string name="pref_share_crash_log">View / Share Crash Log</string>
+    <string name="pref_share_crash_log_summary">Send files/crash.log for debugging issues</string>
+    <string name="no_crash_log">No crash log found. System is healthy!</string>
+
+    <!-- Font Family Options -->
+    <string name="font_default">System Monospace</string>
+    <string name="font_jetbrains">JetBrains Mono</string>
+    <string name="font_fira">Fira Code</string>
+
+    <!-- Color Scheme Options -->
+    <string name="theme_default">Default Termux</string>
+    <string name="theme_dracula">Dracula Dark</string>
+    <string name="theme_solarized">Solarized Dark</string>
+    <string name="theme_monokai">Monokai Pro</string>
+    <string name="theme_light">Classic Light</string>
+
+    <!-- Mirrors -->
+    <string name="mirror_cf">Cloudflare CDN (Global High-Speed)</string>
+    <string name="mirror_termux">Official Termux Repository</string>
+    <string name="mirror_tsinghua">Tsinghua University Mirror</string>
+    <string name="mirror_bfsu">BFSU Beijing Mirror</string>
+
+    <!-- Storage symlink labels -->
+    <string name="shortcut_add">Add Folder Shortcut</string>
+    <string name="shortcut_hint">Path (e.g. ~/my_bot)</string>
 </resources>

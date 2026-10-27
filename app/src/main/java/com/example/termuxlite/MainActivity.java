@@ -6,23 +6,31 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.SharedPreferences;
+import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.util.Log;
+import android.util.Patterns;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.termux.terminal.TerminalEmulator;
@@ -32,17 +40,15 @@ import com.termux.view.TerminalView;
 import com.termux.view.TerminalViewClient;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
 
 /**
- * A Termux-style terminal app with automatic bootstrap installer.
- *
- * Provides a pseudo-terminal environment supporting pkg, apt, python, pip,
- * bash, and multi-session tabs.
+ * Main Activity for BoomAux (Termux Lite).
+ * Supports multi-session tabs, responsive UI, WakeLock toggle, URL tapping, and customizable fonts.
  */
 public class MainActivity extends AppCompatActivity implements TerminalSessionClient, TerminalViewClient {
 
@@ -52,6 +58,9 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
     private TerminalView terminalView;
     private TextView sessionTitle;
+    private Button btnWakeLock;
+    private Button btnFolderShortcuts;
+    private Button btnSettings;
     private Button keyCtrl, keyAlt;
 
     private View bootstrapStatusLayout;
@@ -61,6 +70,14 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
     private TermuxService termuxService;
     private boolean isBound = false;
+
+    private boolean ctrlActive = false;
+    private boolean altActive = false;
+    private float fontDp = 14f;
+
+    private SharedPreferences prefs;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private ActivityResultLauncher<Intent> settingsLauncher;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -94,6 +111,9 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
                 }
             });
 
+            updateWakeLockUi();
+            applySavedPreferences();
+
             if (termuxService.getSessions().isEmpty()) {
                 newSession();
             } else {
@@ -108,21 +128,19 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         }
     };
 
-    private boolean ctrlActive = false;
-    private boolean altActive = false;
-    private float fontDp = 14f;
-
-    private final Handler handler = new Handler(Looper.getMainLooper());
-
-    // ---------------------------------------------------------------- lifecycle
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        CrashHandler.init(this);
         setContentView(R.layout.activity_main);
+
+        prefs = getSharedPreferences("boomaux_prefs", MODE_PRIVATE);
 
         terminalView = findViewById(R.id.terminalView);
         sessionTitle = findViewById(R.id.sessionTitle);
+        btnWakeLock = findViewById(R.id.btnWakeLock);
+        btnFolderShortcuts = findViewById(R.id.btnFolderShortcuts);
+        btnSettings = findViewById(R.id.btnSettings);
         keyCtrl = findViewById(R.id.keyCtrl);
         keyAlt = findViewById(R.id.keyAlt);
 
@@ -134,13 +152,25 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         btnRetryBootstrap.setOnClickListener(v -> checkAndInstallBootstrap());
 
         terminalView.setTerminalViewClient(this);
-        applyFontSize();
+
+        settingsLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    applySavedPreferences();
+                    if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                        boolean resetEnv = result.getData().getBooleanExtra("reset_environment", false);
+                        if (resetEnv) {
+                            boolean wipeHome = result.getData().getBooleanExtra("wipe_home", false);
+                            performResetEnvironment(wipeHome);
+                        }
+                    }
+                }
+        );
 
         setupButtons();
-        setupFallbackCommands();
+        applySavedPreferences();
 
         terminalView.requestFocus();
-
         checkAndInstallBootstrap();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -158,36 +188,53 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
 
-    private void setupFallbackCommands() {
-        try {
-            File binDir = new File(getFilesDir(), "bin");
-            if (!binDir.exists()) binDir.mkdirs();
-
-            File pkgFile = new File(binDir, "pkg");
-            String pkgContent = "#!/system/bin/sh\n" +
-                    "echo \"\\033[1;36m[*] BoomAux bootstrap environment is installing in the background.\\033[0m\"\n" +
-                    "echo \"[*] Once installation completes, full 'pkg' and 'apt' will be active.\"\n" +
-                    "echo \"[*] Please wait a moment...\"\n";
-            writeStringToFile(pkgFile, pkgContent);
-            try {
-                android.system.Os.chmod(pkgFile.getAbsolutePath(), 0755);
-            } catch (Exception ignored) {}
-
-            File pipFile = new File(binDir, "pip");
-            String pipContent = "#!/system/bin/sh\n" +
-                    "echo \"\\033[1;36m[*] Python and pip require the BoomAux bootstrap environment.\\033[0m\"\n" +
-                    "echo \"[*] Once bootstrap setup completes, run: pkg install python\\033[0m\"\n";
-            writeStringToFile(pipFile, pipContent);
-            try {
-                android.system.Os.chmod(pipFile.getAbsolutePath(), 0755);
-            } catch (Exception ignored) {}
-        } catch (Exception ignored) {}
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent != null && TermuxService.ACTION_NEW_SESSION.equals(intent.getAction())) {
+            newSession();
+        }
     }
 
-    private static void writeStringToFile(File file, String content) throws IOException {
-        try (FileOutputStream fos = new FileOutputStream(file)) {
-            fos.write(content.getBytes(StandardCharsets.UTF_8));
+    private void applySavedPreferences() {
+        fontDp = prefs.getInt("font_size", 14);
+        applyFontSize();
+
+        // Apply Font family
+        String fontChoice = prefs.getString("font_family", "default");
+        Typeface tf = Typeface.MONOSPACE;
+        if ("jetbrains".equals(fontChoice)) {
+            try {
+                tf = Typeface.createFromAsset(getAssets(), "fonts/jetbrains_mono.ttf");
+            } catch (Exception ignored) {}
+        } else if ("fira".equals(fontChoice)) {
+            try {
+                tf = Typeface.createFromAsset(getAssets(), "fonts/fira_code.ttf");
+            } catch (Exception ignored) {}
         }
+        terminalView.setTypeface(tf);
+
+        // Apply Color Scheme
+        if (termuxService != null) {
+            ColorThemeHelper.loadAndApplySavedTheme(this, termuxService.getSessions());
+        }
+
+        updateWakeLockUi();
+    }
+
+    private void updateWakeLockUi() {
+        if (termuxService == null || btnWakeLock == null) return;
+        boolean wakeHeld = termuxService.isWakeLockHeld();
+        btnWakeLock.setTextColor(wakeHeld ? 0xFF00E676 : 0xFF777777);
+        btnWakeLock.setContentDescription(getString(wakeHeld ? R.string.wakelock_active : R.string.wakelock_inactive));
+    }
+
+    private void toggleWakeLock() {
+        if (termuxService == null) return;
+        boolean newState = !termuxService.isWakeLockHeld();
+        termuxService.setWakeLock(newState);
+        updateWakeLockUi();
+        Toast.makeText(this, newState ? R.string.wakelock_toggle_on : R.string.wakelock_toggle_off, Toast.LENGTH_SHORT).show();
     }
 
     private void checkAndInstallBootstrap() {
@@ -199,7 +246,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
         bootstrapStatusLayout.setVisibility(View.VISIBLE);
         bootstrapProgressBar.setIndeterminate(true);
-        bootstrapStatusText.setText("Installing BoomAux packages (required for pkg and pip)...");
+        bootstrapStatusText.setText(R.string.bootstrap_installing);
         btnRetryBootstrap.setVisibility(View.GONE);
 
         BootstrapInstaller.installAsync(this, new BootstrapInstaller.Callback() {
@@ -227,7 +274,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             public void onSuccess() {
                 runOnUiThread(() -> {
                     bootstrapStatusLayout.setVisibility(View.GONE);
-                    Toast.makeText(MainActivity.this, "BoomAux Linux environment ready!", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, R.string.bootstrap_ready, Toast.LENGTH_SHORT).show();
                     if (termuxService != null) {
                         List<TerminalSession> oldSessions = new ArrayList<>(termuxService.getSessions());
                         for (TerminalSession s : oldSessions) {
@@ -235,6 +282,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
                         }
                         newSession();
                     }
+                    promptFirstRunDialog();
                 });
             }
 
@@ -242,7 +290,72 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             public void onError(String error) {
                 runOnUiThread(() -> {
                     bootstrapProgressBar.setIndeterminate(false);
-                    bootstrapStatusText.setText("Bootstrap error: " + error);
+                    bootstrapStatusText.setText(getString(R.string.bootstrap_error, error));
+                    btnRetryBootstrap.setVisibility(View.VISIBLE);
+                });
+            }
+        });
+    }
+
+    private void promptFirstRunDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.first_run_dialog_title)
+                .setMessage(R.string.first_run_dialog_msg)
+                .setPositiveButton(R.string.action_yes, (d, w) -> {
+                    TerminalSession current = terminalView.getCurrentSession();
+                    if (current != null) {
+                        Toast.makeText(this, R.string.first_run_installing, Toast.LENGTH_SHORT).show();
+                        current.write("pkg update -y && pkg install -y python git\n");
+                    }
+                })
+                .setNegativeButton(R.string.action_no, null)
+                .show();
+    }
+
+    private void performResetEnvironment(boolean wipeHome) {
+        if (termuxService != null) {
+            for (TerminalSession s : new ArrayList<>(termuxService.getSessions())) {
+                termuxService.removeSession(s);
+            }
+        }
+        bootstrapStatusLayout.setVisibility(View.VISIBLE);
+        bootstrapProgressBar.setIndeterminate(true);
+        btnRetryBootstrap.setVisibility(View.GONE);
+
+        BootstrapInstaller.resetEnvironment(this, wipeHome, new BootstrapInstaller.Callback() {
+            @Override
+            public void onProgress(long current, long total, String message) {
+                runOnUiThread(() -> {
+                    bootstrapProgressBar.setIndeterminate(false);
+                    if (total > 0) {
+                        bootstrapProgressBar.setProgress((int) ((current * 100) / total));
+                    }
+                    bootstrapStatusText.setText(message);
+                });
+            }
+
+            @Override
+            public void onStatus(String status) {
+                runOnUiThread(() -> {
+                    bootstrapProgressBar.setIndeterminate(true);
+                    bootstrapStatusText.setText(status);
+                });
+            }
+
+            @Override
+            public void onSuccess() {
+                runOnUiThread(() -> {
+                    bootstrapStatusLayout.setVisibility(View.GONE);
+                    Toast.makeText(MainActivity.this, R.string.bootstrap_ready, Toast.LENGTH_SHORT).show();
+                    newSession();
+                });
+            }
+
+            @Override
+            public void onError(String error) {
+                runOnUiThread(() -> {
+                    bootstrapProgressBar.setIndeterminate(false);
+                    bootstrapStatusText.setText(getString(R.string.bootstrap_error, error));
                     btnRetryBootstrap.setVisibility(View.VISIBLE);
                 });
             }
@@ -255,6 +368,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         if (termuxService != null) {
             termuxService.setActiveClient(this);
             attachCurrentSession();
+            updateWakeLockUi();
         }
     }
 
@@ -279,10 +393,10 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         super.onDestroy();
     }
 
-    // ---------------------------------------------------------------- sessions
+    // ---------------------------------------------------------------- environment & sessions
 
-    private String[] buildEnvironment() {
-        File filesDir = getFilesDir();
+    public static String[] buildStaticEnvironment(Context context) {
+        File filesDir = context.getFilesDir();
         File usr = new File(filesDir, "usr");
         File home = new File(filesDir, "home");
         if (!home.exists()) home.mkdirs();
@@ -299,12 +413,9 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("HOME=" + home.getAbsolutePath());
         env.add("TMPDIR=" + tmp.getAbsolutePath());
         env.add("PREFIX=" + prefix);
-        env.add("BOOMAUX_FILES=" + filesDir.getAbsolutePath());
-        env.add("BOOMAUX_PREFIX=" + prefix);
-        env.add("BOOMAXE_FILES=" + filesDir.getAbsolutePath());
         env.add("LANG=en_US.UTF-8");
         env.add("PATH=" + binDir + ":" + appletsDir + ":/system/bin");
-        env.add("LD_LIBRARY_PATH=" + prefix + "/lib:" + getApplicationInfo().nativeLibraryDir);
+        env.add("LD_LIBRARY_PATH=" + prefix + "/lib");
         env.add("ANDROID_ROOT=/system");
         env.add("ANDROID_DATA=/data");
         env.add("EXTERNAL_STORAGE=/sdcard");
@@ -315,11 +426,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("CURL_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
         env.add("GIT_SSL_CAINFO=" + prefix + "/etc/tls/cert.pem");
         env.add("REQUESTS_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
-        env.add("PIP_CERT=" + prefix + "/etc/tls/cert.pem");
-        env.add("PIP_CONFIG_FILE=" + prefix + "/etc/pip.conf");
         env.add("CURL_HOME=" + home.getAbsolutePath());
-        env.add("PYTHONHTTPSVERIFY=0");
-        env.add("PIP_TRUSTED_HOST=pypi.org pypi.python.org files.pythonhosted.org");
 
         File bash = new File(binDir, "bash");
         if (bash.exists()) {
@@ -328,27 +435,13 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             env.add("SHELL=/system/bin/sh");
         }
 
-        // Configure LD_PRELOAD with our native C redirector and termux-exec
-        File prefixRedirect = new File(prefix, "lib/libboomaux-redirect.so");
-        File appRedirect = new File(getApplicationInfo().nativeLibraryDir, "libboomaux-redirect.so");
-        String redirectSo = prefixRedirect.exists() ? prefixRedirect.getAbsolutePath() :
-                (appRedirect.exists() ? appRedirect.getAbsolutePath() : null);
-
+        // Standard Termux-exec preload if present
         File termuxExec = new File(prefix, "lib/libtermux-exec-ld-preload.so");
         if (!termuxExec.exists()) {
             termuxExec = new File(prefix, "lib/libtermux-exec.so");
         }
-
-        StringBuilder ldPreload = new StringBuilder();
-        if (redirectSo != null) {
-            ldPreload.append(redirectSo);
-        }
         if (termuxExec.exists()) {
-            if (ldPreload.length() > 0) ldPreload.append(":");
-            ldPreload.append(termuxExec.getAbsolutePath());
-        }
-        if (ldPreload.length() > 0) {
-            env.add("LD_PRELOAD=" + ldPreload.toString());
+            env.add("LD_PRELOAD=" + termuxExec.getAbsolutePath());
         }
 
         return env.toArray(new String[0]);
@@ -365,7 +458,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         String cwd = bash.exists() ? home.getAbsolutePath() : getFilesDir().getAbsolutePath();
         String[] args = bash.exists() ? new String[]{"bash", "-l"} : new String[]{"sh"};
 
-        termuxService.createSession(shell, cwd, args, buildEnvironment(),
+        termuxService.createSession(shell, cwd, args, buildStaticEnvironment(this),
                 "Session " + (termuxService.getSessions().size() + 1));
         attachCurrentSession();
     }
@@ -407,12 +500,97 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         if (s == null) return;
         String t = s.getTitle();
         String label = (t == null || t.isEmpty()) ? s.mSessionName : t;
-        sessionTitle.setText((current + 1) + "/" + total + "  " + label);
+        sessionTitle.setText(getString(R.string.session_count_format, (current + 1), total, label));
     }
 
-    // ---------------------------------------------------------------- buttons
+    private void promptRenameSession() {
+        if (termuxService == null) return;
+        TerminalSession current = termuxService.getCurrentSession();
+        if (current == null) return;
+
+        final EditText input = new EditText(this);
+        input.setHint(R.string.session_rename_hint);
+        input.setText(current.mSessionName);
+        input.setSelectAllOnFocus(true);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.session_rename_title)
+                .setView(input)
+                .setPositiveButton(R.string.action_save, (dialog, which) -> {
+                    String name = input.getText().toString().trim();
+                    if (!name.isEmpty()) {
+                        current.mSessionName = name;
+                        updateTitle();
+                        if (termuxService != null) termuxService.updateNotification();
+                    }
+                })
+                .setNegativeButton(R.string.action_cancel, null)
+                .show();
+    }
+
+    private void showFolderShortcuts() {
+        File home = new File(getFilesDir(), "home");
+        final List<String> paths = new ArrayList<>();
+        paths.add("~ (Home)");
+        paths.add("~/storage/shared (Internal Storage)");
+        paths.add("~/storage/downloads (Downloads)");
+        paths.add("~/storage/dcim (DCIM)");
+
+        // Read saved custom folders
+        Set<String> custom = prefs.getStringSet("custom_folders", new HashSet<>());
+        if (custom != null) {
+            paths.addAll(custom);
+        }
+
+        final String[] items = new String[paths.size() + 1];
+        for (int i = 0; i < paths.size(); i++) items[i] = paths.get(i);
+        items[paths.size()] = "+ " + getString(R.string.shortcut_add);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.menu_folder_shortcuts)
+                .setItems(items, (dialog, which) -> {
+                    if (which == paths.size()) {
+                        promptAddFolderShortcut();
+                    } else {
+                        String chosen = paths.get(which);
+                        String targetDir = chosen.split(" ")[0]; // takes ~/storage/shared etc.
+                        TerminalSession s = terminalView.getCurrentSession();
+                        if (s != null) {
+                            s.write("cd " + targetDir + "\n");
+                        }
+                    }
+                })
+                .show();
+    }
+
+    private void promptAddFolderShortcut() {
+        final EditText input = new EditText(this);
+        input.setHint(R.string.shortcut_hint);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.shortcut_add)
+                .setView(input)
+                .setPositiveButton(R.string.action_save, (dialog, which) -> {
+                    String path = input.getText().toString().trim();
+                    if (!path.isEmpty()) {
+                        Set<String> custom = new HashSet<>(prefs.getStringSet("custom_folders", new HashSet<>()));
+                        custom.add(path);
+                        prefs.edit().putStringSet("custom_folders", custom).apply();
+                        Toast.makeText(this, "Shortcut saved", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton(R.string.action_cancel, null)
+                .show();
+    }
+
+    // ---------------------------------------------------------------- buttons & keys
 
     private void setupButtons() {
+        sessionTitle.setOnClickListener(v -> promptRenameSession());
+        btnWakeLock.setOnClickListener(v -> toggleWakeLock());
+        btnFolderShortcuts.setOnClickListener(v -> showFolderShortcuts());
+        btnSettings.setOnClickListener(v -> settingsLauncher.launch(new Intent(this, SettingsActivity.class)));
+
         findViewById(R.id.btnNew).setOnClickListener(v -> newSession());
         findViewById(R.id.btnClose).setOnClickListener(v -> closeCurrent());
         findViewById(R.id.btnPrev).setOnClickListener(v -> {
@@ -443,7 +621,9 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     }
 
     private void bindKey(int id, int keyCode) {
-        findViewById(id).setOnClickListener(v -> {
+        View v = findViewById(id);
+        if (v == null) return;
+        v.setOnClickListener(view -> {
             TerminalSession s = terminalView.getCurrentSession();
             if (s == null) return;
             int mod = 0;
@@ -455,7 +635,9 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     }
 
     private void bindText(int id, String text) {
-        findViewById(id).setOnClickListener(v -> {
+        View v = findViewById(id);
+        if (v == null) return;
+        v.setOnClickListener(view -> {
             TerminalSession s = terminalView.getCurrentSession();
             if (s == null) return;
             terminalView.inputCodePoint(TerminalView.KEY_EVENT_SOURCE_VIRTUAL_KEYBOARD,
@@ -471,13 +653,60 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     }
 
     private void refreshModifierButtons() {
-        keyCtrl.setBackgroundColor(ctrlActive ? 0xFF3F51B5 : 0x00000000);
-        keyAlt.setBackgroundColor(altActive ? 0xFF3F51B5 : 0x00000000);
+        keyCtrl.setBackgroundColor(ctrlActive ? 0xFF00E676 : 0x00000000);
+        keyCtrl.setTextColor(ctrlActive ? 0xFF000000 : 0xFFE0E0E0);
+        keyAlt.setBackgroundColor(altActive ? 0xFF00E676 : 0x00000000);
+        keyAlt.setTextColor(altActive ? 0xFF000000 : 0xFFE0E0E0);
     }
 
     private void applyFontSize() {
         float px = fontDp * getResources().getDisplayMetrics().density;
         terminalView.setTextSize(Math.round(px));
+    }
+
+    // ---------------------------------------------------------------- Volume Key Modifiers
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        boolean volumeKeysEnabled = prefs.getBoolean("volume_keys_modifiers", false);
+        if (volumeKeysEnabled) {
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                ctrlActive = !ctrlActive;
+                refreshModifierButtons();
+                return true;
+            } else if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                altActive = !altActive;
+                refreshModifierButtons();
+                return true;
+            }
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        boolean volumeKeysEnabled = prefs.getBoolean("volume_keys_modifiers", false);
+        if (volumeKeysEnabled && (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
+    }
+
+    // ---------------------------------------------------------------- Back button behavior
+
+    @Override
+    public void onBackPressed() {
+        String backAction = prefs.getString("back_action", "minimize");
+        if ("escape".equals(backAction)) {
+            TerminalSession s = terminalView.getCurrentSession();
+            if (s != null) {
+                terminalView.handleKeyCode(KeyEvent.KEYCODE_ESCAPE, 0);
+            }
+        } else if ("close".equals(backAction)) {
+            closeCurrent();
+        } else {
+            moveTaskToBack(true);
+        }
     }
 
     // ---------------------------------------------------------------- TerminalSessionClient
@@ -502,13 +731,19 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     @Override
     public void onCopyTextToClipboard(@NonNull TerminalSession session, String text) {
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("terminal", text));
+        if (cm != null) {
+            cm.setPrimaryClip(ClipData.newPlainText("terminal", text));
+            Toast.makeText(this, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override
     public void onPasteTextFromClipboard(@Nullable TerminalSession session) {
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm == null || !cm.hasPrimaryClip() || session == null) return;
+        if (cm == null || !cm.hasPrimaryClip() || session == null) {
+            Toast.makeText(this, R.string.clipboard_empty, Toast.LENGTH_SHORT).show();
+            return;
+        }
         ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
         CharSequence text = item.coerceToText(this);
         if (text != null && text.length() > 0) {
@@ -518,8 +753,11 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
     @Override
     public void onBell(@NonNull TerminalSession session) {
-        android.os.Vibrator v = (android.os.Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-        if (v != null) v.vibrate(50);
+        boolean vibrate = prefs.getBoolean("vibrate_on_bell", true);
+        if (vibrate) {
+            android.os.Vibrator v = (android.os.Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (v != null) v.vibrate(50);
+        }
     }
 
     @Override
@@ -528,14 +766,10 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     }
 
     @Override
-    public void onTerminalCursorStateChange(boolean state) {
-        // Cursor blink is not used in this minimal app.
-    }
+    public void onTerminalCursorStateChange(boolean state) {}
 
     @Override
-    public void setTerminalShellPid(@NonNull TerminalSession session, int pid) {
-        // Not needed.
-    }
+    public void setTerminalShellPid(@NonNull TerminalSession session, int pid) {}
 
     @Override
     public Integer getTerminalCursorStyle() {
@@ -550,6 +784,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             float delta = scale > 1f ? 1f : -1f;
             fontDp = Math.max(MIN_FONT_DP, Math.min(MAX_FONT_DP, fontDp + delta));
             applyFontSize();
+            prefs.edit().putInt("font_size", Math.round(fontDp)).apply();
             return 1.0f;
         }
         return scale;
@@ -557,22 +792,106 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
     @Override
     public void onSingleTapUp(MotionEvent e) {
+        TerminalSession session = terminalView.getCurrentSession();
+        if (session != null && session.getEmulator() != null) {
+            int[] colRow = terminalView.getColumnAndRow(e, true);
+            String word = session.getEmulator().getScreen().getWordAtLocation(colRow[0], colRow[1]);
+            String url = extractUrl(word);
+            if (url != null) {
+                openUrlInBrowser(url);
+                return;
+            }
+        }
+
         terminalView.requestFocus();
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         if (imm != null) imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    @Override
+    public boolean onLongPress(MotionEvent event) {
+        TerminalSession session = terminalView.getCurrentSession();
+        String candidateUrl = null;
+        if (session != null && session.getEmulator() != null) {
+            int[] colRow = terminalView.getColumnAndRow(event, true);
+            String word = session.getEmulator().getScreen().getWordAtLocation(colRow[0], colRow[1]);
+            candidateUrl = extractUrl(word);
+        }
+
+        final String targetUrl = candidateUrl;
+        List<String> options = new ArrayList<>();
+        if (targetUrl != null) {
+            options.add(getString(R.string.menu_open_url, targetUrl));
+        }
+        options.add(getString(R.string.menu_copy_all));
+        options.add(getString(R.string.menu_paste));
+        options.add(getString(R.string.menu_rename_session));
+        options.add(getString(R.string.menu_reset_terminal));
+        options.add(getString(R.string.menu_kill_process));
+
+        final String[] items = options.toArray(new String[0]);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.terminal_menu_title)
+                .setItems(items, (dialog, which) -> {
+                    String selected = items[which];
+                    if (targetUrl != null && selected.startsWith(getString(R.string.menu_open_url, "").split("%")[0])) {
+                        openUrlInBrowser(targetUrl);
+                    } else if (selected.equals(getString(R.string.menu_copy_all))) {
+                        if (session != null && session.getEmulator() != null) {
+                            String text = session.getEmulator().getScreen().getTranscriptText();
+                            onCopyTextToClipboard(session, text);
+                        }
+                    } else if (selected.equals(getString(R.string.menu_paste))) {
+                        onPasteTextFromClipboard(session);
+                    } else if (selected.equals(getString(R.string.menu_rename_session))) {
+                        promptRenameSession();
+                    } else if (selected.equals(getString(R.string.menu_reset_terminal))) {
+                        if (session != null) {
+                            session.reset();
+                            terminalView.invalidate();
+                        }
+                    } else if (selected.equals(getString(R.string.menu_kill_process))) {
+                        if (session != null) {
+                            session.write(new byte[]{3}, 0, 1); // Send Ctrl+C (ETX)
+                        }
+                    }
+                })
+                .show();
+
+        return true;
+    }
+
+    private static String extractUrl(String text) {
+        if (text == null || text.trim().isEmpty()) return null;
+        text = text.trim();
+        Matcher matcher = Patterns.WEB_URL.matcher(text);
+        if (matcher.find()) {
+            String match = matcher.group();
+            if (!match.startsWith("http://") && !match.startsWith("https://")) {
+                match = "https://" + match;
+            }
+            return match;
+        }
+        return null;
+    }
+
+    private void openUrlInBrowser(String url) {
+        try {
+            Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            startActivity(browserIntent);
+        } catch (Exception e) {
+            Toast.makeText(this, "Cannot open URL: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override public boolean shouldBackButtonBeMappedToEscape() { return false; }
     @Override public boolean shouldEnforceCharBasedInput() { return true; }
     @Override public boolean shouldUseCtrlSpaceWorkaround() { return false; }
     @Override public boolean isTerminalViewSelected() { return true; }
-    @Override public void copyModeChanged(boolean copyMode) { }
+    @Override public void copyModeChanged(boolean copyMode) {}
     @Override public boolean onKeyDown(int keyCode, KeyEvent e, TerminalSession session) { return false; }
-    @Override public boolean onKeyUp(int keyCode, KeyEvent e) { return false; }
-    @Override public boolean onLongPress(MotionEvent event) { return false; }
 
-    // Sticky modifiers are read several times for a single key press, so they are cleared
-    // shortly after the first read instead of immediately.
     @Override public boolean readControlKey() { return readModifier(ctrlActive); }
     @Override public boolean readAltKey() { return readModifier(altActive); }
     @Override public boolean readShiftKey() { return false; }
@@ -593,7 +912,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         updateTitle();
     }
 
-    // ---------------------------------------------------------------- logging (both interfaces)
+    // ---------------------------------------------------------------- logging
 
     @Override public void logError(String tag, String message) { Log.e(tag, message); }
     @Override public void logWarn(String tag, String message) { Log.w(tag, message); }
@@ -602,4 +921,4 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     @Override public void logVerbose(String tag, String message) { Log.v(tag, message); }
     @Override public void logStackTraceWithMessage(String tag, String message, Exception e) { Log.e(tag, message, e); }
     @Override public void logStackTrace(String tag, Exception e) { Log.e(tag, "error", e); }
-    }
+}

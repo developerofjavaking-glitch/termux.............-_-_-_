@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
@@ -21,21 +22,23 @@ import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalSession;
 import com.termux.terminal.TerminalSessionClient;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Foreground service that holds terminal sessions in memory.
- *
- * Keeps processes and terminal sessions running continuously in the background
- * even when the activity is minimized, closed, or swiped away from recents.
+ * Foreground service managing active terminal sessions, background execution, and WakeLock.
  */
 public class TermuxService extends Service implements TerminalSessionClient {
 
     private static final String TAG = "BoomAuxService";
     private static final String CHANNEL_ID = "boomaux_background_service";
     private static final int NOTIFICATION_ID = 1337;
-    public static final String ACTION_STOP_SERVICE = "com.boomaux.boom.bdcreator.ACTION_STOP_SERVICE";
+
+    public static final String ACTION_STOP_SERVICE = "com.termux.ACTION_STOP_SERVICE";
+    public static final String ACTION_TOGGLE_WAKELOCK = "com.termux.ACTION_TOGGLE_WAKELOCK";
+    public static final String ACTION_NEW_SESSION = "com.termux.ACTION_NEW_SESSION";
+    public static final String ACTION_EXECUTE_BOOT_SCRIPT = "com.termux.ACTION_EXECUTE_BOOT_SCRIPT";
 
     public interface ServiceSessionListener {
         void onSessionListChanged();
@@ -56,19 +59,44 @@ public class TermuxService extends Service implements TerminalSessionClient {
     private ServiceSessionListener sessionListener;
     private TerminalSessionClient activeClient;
     private PowerManager.WakeLock wakeLock;
+    private boolean isWakeLockEnabled = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
-        acquireWakeLock();
+
+        SharedPreferences prefs = getSharedPreferences("boomaux_prefs", MODE_PRIVATE);
+        boolean defaultWakeLock = prefs.getBoolean("wakelock_default", true);
+        if (defaultWakeLock) {
+            setWakeLock(true);
+        } else {
+            updateNotification();
+        }
+
+        ColorThemeHelper.loadAndApplySavedTheme(this, sessions);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_STOP_SERVICE.equals(intent.getAction())) {
-            stopAllSessionsAndSelf();
-            return START_NOT_STICKY;
+        if (intent != null && intent.getAction() != null) {
+            String action = intent.getAction();
+            if (ACTION_STOP_SERVICE.equals(action)) {
+                stopAllSessionsAndSelf();
+                return START_NOT_STICKY;
+            } else if (ACTION_TOGGLE_WAKELOCK.equals(action)) {
+                setWakeLock(!isWakeLockHeld());
+                return START_STICKY;
+            } else if (ACTION_NEW_SESSION.equals(action)) {
+                Intent mainIntent = new Intent(this, MainActivity.class);
+                mainIntent.setAction(ACTION_NEW_SESSION);
+                mainIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(mainIntent);
+                return START_STICKY;
+            } else if (ACTION_EXECUTE_BOOT_SCRIPT.equals(action)) {
+                executeBootScript();
+                return START_STICKY;
+            }
         }
 
         updateNotification();
@@ -83,9 +111,7 @@ public class TermuxService extends Service implements TerminalSessionClient {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         super.onTaskRemoved(rootIntent);
-        // Do NOT destroy sessions when user swipes away app from recents!
-        // Keep running in background with ongoing notification just like official Termux.
-        Log.i(TAG, "Task swiped away from recents. Keeping " + sessions.size() + " session(s) active in background.");
+        Log.i(TAG, "Task removed from recents. Keeping " + sessions.size() + " session(s) running.");
         if (sessions.isEmpty()) {
             stopSelf();
         } else {
@@ -95,12 +121,39 @@ public class TermuxService extends Service implements TerminalSessionClient {
 
     @Override
     public void onDestroy() {
-        releaseWakeLock();
+        setWakeLock(false);
         for (TerminalSession s : sessions) {
             s.finishIfRunning();
         }
         sessions.clear();
         super.onDestroy();
+    }
+
+    // ---------------------------------------------------------------- WakeLock
+
+    public synchronized void setWakeLock(boolean enable) {
+        this.isWakeLockEnabled = enable;
+        if (enable) {
+            if (wakeLock == null) {
+                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (pm != null) {
+                    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BoomAux:BotRunner");
+                    wakeLock.acquire();
+                    Log.i(TAG, "WakeLock acquired successfully.");
+                }
+            }
+        } else {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+                wakeLock = null;
+                Log.i(TAG, "WakeLock released.");
+            }
+        }
+        updateNotification();
+    }
+
+    public synchronized boolean isWakeLockHeld() {
+        return wakeLock != null && wakeLock.isHeld();
     }
 
     // ---------------------------------------------------------------- session management
@@ -173,6 +226,7 @@ public class TermuxService extends Service implements TerminalSessionClient {
             s.finishIfRunning();
         }
         sessions.clear();
+        setWakeLock(false);
         if (sessionListener != null) {
             sessionListener.onSessionListChanged();
         }
@@ -188,16 +242,52 @@ public class TermuxService extends Service implements TerminalSessionClient {
         this.activeClient = client;
     }
 
-    // ---------------------------------------------------------------- notification & wakelock
+    // ---------------------------------------------------------------- boot execution
+
+    private void executeBootScript() {
+        if (!BootstrapInstaller.isInstalled(this)) {
+            Log.w(TAG, "Bootstrap not yet installed. Skipping boot script execution.");
+            return;
+        }
+
+        SharedPreferences prefs = getSharedPreferences("boomaux_prefs", MODE_PRIVATE);
+        String customCmd = prefs.getString("boot_command", "").trim();
+
+        File usr = new File(getFilesDir(), "usr");
+        File bash = new File(usr, "bin/bash");
+        File home = new File(getFilesDir(), "home");
+        if (!home.exists()) home.mkdirs();
+
+        String shell = bash.exists() ? bash.getAbsolutePath() : "/system/bin/sh";
+        String cwd = home.getAbsolutePath();
+
+        String[] args;
+        if (!customCmd.isEmpty()) {
+            args = new String[]{"bash", "-l", "-c", customCmd};
+        } else {
+            File startBotScript = new File(home, "start_bot.sh");
+            if (startBotScript.exists()) {
+                args = new String[]{"bash", "-l", startBotScript.getAbsolutePath()};
+            } else {
+                args = new String[]{"bash", "-l"};
+            }
+        }
+
+        // Spawn background session
+        createSession(shell, cwd, args, MainActivity.buildStaticEnvironment(this), "Boot Bot");
+        Log.i(TAG, "Executed boot script/bot session in background.");
+    }
+
+    // ---------------------------------------------------------------- notification
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
-                    "BoomAux Terminal Sessions",
+                    getString(R.string.notification_channel_name),
                     NotificationManager.IMPORTANCE_LOW
             );
-            channel.setDescription("Shows notification while terminal sessions run in the background");
+            channel.setDescription(getString(R.string.notification_channel_desc));
             channel.setShowBadge(false);
             NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm != null) {
@@ -206,51 +296,52 @@ public class TermuxService extends Service implements TerminalSessionClient {
         }
     }
 
-    private void updateNotification() {
+    public void updateNotification() {
         int count = sessions.size();
-        String contentText = count == 1 ? "1 session running" : (count + " sessions running");
-        if (count == 0) {
-            contentText = "No active sessions";
-        }
+        String sessionStr = count == 1 ? getString(R.string.notification_single_session) :
+                (count == 0 ? getString(R.string.notification_no_sessions) : getString(R.string.notification_multi_sessions, count));
+
+        boolean wakeHeld = isWakeLockHeld();
+        String contentText = sessionStr + " • " + (wakeHeld ? getString(R.string.wakelock_active) : getString(R.string.wakelock_inactive));
 
         Intent notifyIntent = new Intent(this, MainActivity.class);
         notifyIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent contentPendingIntent = PendingIntent.getActivity(this, 0, notifyIntent,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
 
-        Intent exitIntent = new Intent(this, TermuxService.class);
-        exitIntent.setAction(ACTION_STOP_SERVICE);
-        PendingIntent exitPendingIntent = PendingIntent.getService(this, 1, exitIntent,
+        // Action: New Session
+        Intent newSessionIntent = new Intent(this, TermuxService.class);
+        newSessionIntent.setAction(ACTION_NEW_SESSION);
+        PendingIntent newSessionPendingIntent = PendingIntent.getService(this, 1, newSessionIntent,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
 
+        // Action: WakeLock Toggle
+        Intent wakeLockIntent = new Intent(this, TermuxService.class);
+        wakeLockIntent.setAction(ACTION_TOGGLE_WAKELOCK);
+        PendingIntent wakeLockPendingIntent = PendingIntent.getService(this, 2, wakeLockIntent,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+
+        // Action: Exit
+        Intent exitIntent = new Intent(this, TermuxService.class);
+        exitIntent.setAction(ACTION_STOP_SERVICE);
+        PendingIntent exitPendingIntent = PendingIntent.getService(this, 3, exitIntent,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+
+        String wakeActionText = wakeHeld ? "WakeLock: ON" : "WakeLock: OFF";
+
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("BoomAux")
+                .setContentTitle(getString(R.string.app_name))
                 .setContentText(contentText)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentIntent(contentPendingIntent)
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Exit", exitPendingIntent)
+                .addAction(android.R.drawable.ic_input_add, getString(R.string.notification_action_new), newSessionPendingIntent)
+                .addAction(android.R.drawable.ic_lock_idle_charging, wakeActionText, wakeLockPendingIntent)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, getString(R.string.notification_action_exit), exitPendingIntent)
                 .build();
 
         startForeground(NOTIFICATION_ID, notification);
-    }
-
-    private void acquireWakeLock() {
-        if (wakeLock == null) {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (pm != null) {
-                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BoomAux:WakeLock");
-                wakeLock.acquire();
-            }
-        }
-    }
-
-    private void releaseWakeLock() {
-        if (wakeLock != null && wakeLock.isHeld()) {
-            wakeLock.release();
-            wakeLock = null;
-        }
     }
 
     // ---------------------------------------------------------------- TerminalSessionClient delegate
@@ -328,38 +419,11 @@ public class TermuxService extends Service implements TerminalSessionClient {
         return activeClient != null ? activeClient.getTerminalCursorStyle() : TerminalEmulator.DEFAULT_TERMINAL_CURSOR_STYLE;
     }
 
-    @Override
-    public void logError(String tag, String message) {
-        Log.e(tag, message);
-    }
-
-    @Override
-    public void logWarn(String tag, String message) {
-        Log.w(tag, message);
-    }
-
-    @Override
-    public void logInfo(String tag, String message) {
-        Log.i(tag, message);
-    }
-
-    @Override
-    public void logDebug(String tag, String message) {
-        Log.d(tag, message);
-    }
-
-    @Override
-    public void logVerbose(String tag, String message) {
-        Log.v(tag, message);
-    }
-
-    @Override
-    public void logStackTraceWithMessage(String tag, String message, Exception e) {
-        Log.e(tag, message, e);
-    }
-
-    @Override
-    public void logStackTrace(String tag, Exception e) {
-        Log.e(tag, "Exception", e);
-    }
+    @Override public void logError(String tag, String message) { Log.e(tag, message); }
+    @Override public void logWarn(String tag, String message) { Log.w(tag, message); }
+    @Override public void logInfo(String tag, String message) { Log.i(tag, message); }
+    @Override public void logDebug(String tag, String message) { Log.d(tag, message); }
+    @Override public void logVerbose(String tag, String message) { Log.v(tag, message); }
+    @Override public void logStackTraceWithMessage(String tag, String message, Exception e) { Log.e(tag, message, e); }
+    @Override public void logStackTrace(String tag, Exception e) { Log.e(tag, "Exception", e); }
 }

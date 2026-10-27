@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:orientation="vertical">
+
+    <!-- Top session & action bar (compact for landscape) -->
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:background="#1E1E1E"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingEnd="4dp"
+        android:paddingStart="8dp">
+
+        <ImageView
+            android:id="@+id/appLogoIcon"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:contentDescription="@string/app_name"
+            android:src="@drawable/ic_boomaux_logo" />
+
+        <TextView
+            android:id="@+id/sessionTitle"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:paddingStart="8dp"
+            android:paddingEnd="4dp"
+            android:text="1/1 Session 1"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnWakeLock"
+            style="@style/TopBarButton"
+            android:layout_width="wrap_content"
+            android:minWidth="32dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="⚡"
+            android:textColor="#888888"
+            android:contentDescription="@string/wakelock_inactive" />
+
+        <Button
+            android:id="@+id/btnFolderShortcuts"
+            style="@style/TopBarButton"
+            android:text="📁"
+            android:contentDescription="@string/menu_folder_shortcuts" />
+
+        <Button
+            android:id="@+id/btnSettings"
+            style="@style/TopBarButton"
+            android:text="⚙"
+            android:contentDescription="@string/menu_settings" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="18dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:background="#333333" />
+
+        <Button android:id="@+id/btnPrev" style="@style/TopBarButton" android:text="◀" />
+        <Button android:id="@+id/btnNext" style="@style/TopBarButton" android:text="▶" />
+        <Button android:id="@+id/btnNew" style="@style/TopBarButton" android:text="+" />
+        <Button android:id="@+id/btnClose" style="@style/TopBarButton" android:text="✕" />
+    </LinearLayout>
+
+    <!-- Bootstrap Installation Status Banner -->
+    <LinearLayout
+        android:id="@+id/bootstrapStatusLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#232731"
+        android:orientation="vertical"
+        android:padding="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/bootstrapStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/bootstrap_installing"
+            android:textColor="#88C0D0"
+            android:textSize="12sp" />
+
+        <ProgressBar
+            android:id="@+id/bootstrapProgressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:layout_marginTop="4dp"
+            android:indeterminate="false"
+            android:max="100"
+            android:progress="0" />
+
+        <Button
+            android:id="@+id/btnRetryBootstrap"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginTop="4dp"
+            android:backgroundTint="#3B4252"
+            android:text="@string/bootstrap_retry"
+            android:textColor="#ECEFF4"
+            android:textSize="11sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Terminal View -->
+    <com.termux.view.TerminalView
+        android:id="@+id/terminalView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:importantForAutofill="no" />
+
+    <!-- Extra keys bar (compact height for landscape) -->
+    <HorizontalScrollView
+        android:id="@+id/extraKeysScrollView"
+        android:layout_width="match_parent"
+        android:layout_height="34dp"
+        android:background="#1E1E1E"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/keyEsc" style="@style/KeyButton" android:layout_height="34dp" android:text="ESC" />
+            <Button android:id="@+id/keyTab" style="@style/KeyButton" android:layout_height="34dp" android:text="TAB" />
+            <Button android:id="@+id/keyCtrl" style="@style/KeyButton" android:layout_height="34dp" android:text="CTRL" />
+            <Button android:id="@+id/keyAlt" style="@style/KeyButton" android:layout_height="34dp" android:text="ALT" />
+            <Button android:id="@+id/keyLeft" style="@style/KeyButton" android:layout_height="34dp" android:text="←" />
+            <Button android:id="@+id/keyUp" style="@style/KeyButton" android:layout_height="34dp" android:text="↑" />
+            <Button android:id="@+id/keyDown" style="@style/KeyButton" android:layout_height="34dp" android:text="↓" />
+            <Button android:id="@+id/keyRight" style="@style/KeyButton" android:layout_height="34dp" android:text="→" />
+            <Button android:id="@+id/keyDash" style="@style/KeyButton" android:layout_height="34dp" android:text="-" />
+            <Button android:id="@+id/keySlash" style="@style/KeyButton" android:layout_height="34dp" android:text="/" />
+            <Button android:id="@+id/keyPipe" style="@style/KeyButton" android:layout_height="34dp" android:text="|" />
+            <Button android:id="@+id/keyTilde" style="@style/KeyButton" android:layout_height="34dp" android:text="~" />
+            <Button android:id="@+id/keyHome" style="@style/KeyButton" android:layout_height="34dp" android:text="HOME" />
+            <Button android:id="@+id/keyEnd" style="@style/KeyButton" android:layout_height="34dp" android:text="END" />
+            <Button android:id="@+id/keyPgUp" style="@style/KeyButton" android:layout_height="34dp" android:text="PGUP" />
+            <Button android:id="@+id/keyPgDn" style="@style/KeyButton" android:layout_height="34dp" android:text="PGDN" />
+        </LinearLayout>
+    </HorizontalScrollView>
+</LinearLayout>
