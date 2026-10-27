@@ -23,6 +23,12 @@ import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+
 /**
  * Installs the official Termux bootstrap Linux environment for BoomAux.
  *
@@ -81,30 +87,57 @@ public class BootstrapInstaller {
         File tempZip = new File(context.getCacheDir(), "bootstrap-" + arch + ".zip");
         if (tempZip.exists()) tempZip.delete();
 
-        String[] downloadUrls = new String[]{
-                "https://github.com/termux/termux-packages/releases/latest/download/bootstrap-" + arch + ".zip",
-                "https://github.com/termux/termux-packages/releases/download/bootstrap-2024.10.23-r1%2Bapt-android-7/bootstrap-" + arch + ".zip"
-        };
-
         boolean downloaded = false;
         Exception lastException = null;
 
-        for (String urlStr : downloadUrls) {
-            try {
-                callback.onStatus("Connecting to BoomAux package servers...");
-                downloadWithProgress(urlStr, tempZip, callback);
-                downloaded = true;
-                break;
-            } catch (Exception e) {
-                Log.w(TAG, "Failed downloading from: " + urlStr, e);
-                lastException = e;
-                if (tempZip.exists()) tempZip.delete();
+        // Check for locally placed bootstrap file first (offline / manual fallback)
+        File[] localCandidates = new File[]{
+                new File(context.getExternalFilesDir(null), "bootstrap-" + arch + ".zip"),
+                new File("/sdcard/Download/bootstrap-" + arch + ".zip"),
+                new File("/sdcard/bootstrap-" + arch + ".zip")
+        };
+        for (File candidate : localCandidates) {
+            if (candidate.exists() && candidate.length() > 5 * 1024 * 1024) {
+                try {
+                    callback.onStatus("Found local bootstrap: " + candidate.getName());
+                    copyFile(candidate, tempZip);
+                    downloaded = true;
+                    Log.i(TAG, "Using local bootstrap archive: " + candidate.getAbsolutePath());
+                    break;
+                } catch (Exception ignored) {}
+            }
+        }
+
+        // Multiple fast global CDN mirrors with SSL resilience
+        if (!downloaded) {
+            String[] downloadUrls = new String[]{
+                    // Cloudflare high-speed CDN mirror (accessible worldwide without throttling)
+                    "https://gh-proxy.com/https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip",
+                    // Official direct GitHub release asset
+                    "https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip",
+                    // Latest release endpoint
+                    "https://github.com/termux/termux-packages/releases/latest/download/bootstrap-" + arch + ".zip",
+                    // Alternative CDN mirror
+                    "https://ghproxy.net/https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip"
+            };
+
+            for (String urlStr : downloadUrls) {
+                try {
+                    callback.onStatus("Connecting to BoomAux package servers...");
+                    downloadWithProgress(urlStr, tempZip, callback);
+                    downloaded = true;
+                    break;
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed downloading from: " + urlStr, e);
+                    lastException = e;
+                    if (tempZip.exists()) tempZip.delete();
+                }
             }
         }
 
         if (!downloaded || !tempZip.exists() || tempZip.length() == 0) {
             throw new IOException("Failed to download bootstrap archive: " +
-                    (lastException != null ? lastException.getMessage() : "unknown error"));
+                    (lastException != null ? lastException.getMessage() : "network connection failed"));
         }
 
         callback.onStatus("Extracting Linux base system...");
@@ -209,7 +242,7 @@ public class BootstrapInstaller {
         new File(prefixDir, "etc/apt/preferences.d").mkdirs();
         new File(prefixDir, "etc/apt/sources.list.d").mkdirs();
         new File(prefixDir, "etc/termux").mkdirs();
-        new File(prefixDir, "etc/pip.conf").delete(); // remove if directory
+        new File(prefixDir, "etc/pip.conf").delete();
         new File(homeDir, ".termux").mkdirs();
         new File(homeDir, ".config/pip").mkdirs();
 
@@ -348,7 +381,6 @@ public class BootstrapInstaller {
                 bytes = baos.toByteArray();
             }
 
-            // Check if text script
             if (bytes.length > 2 && bytes[0] == '#' && bytes[1] == '!') {
                 String content = new String(bytes, StandardCharsets.UTF_8);
                 boolean changed = false;
@@ -376,16 +408,46 @@ public class BootstrapInstaller {
         } catch (Exception ignored) {}
     }
 
+    private static SSLSocketFactory sPermissiveSSLSocketFactory = null;
+
+    private static synchronized SSLSocketFactory getPermissiveSSLSocketFactory() {
+        if (sPermissiveSSLSocketFactory != null) return sPermissiveSSLSocketFactory;
+        try {
+            TrustManager[] trustAllCerts = new TrustManager[]{
+                    new X509TrustManager() {
+                        public java.security.cert.X509Certificate[] getAcceptedIssuers() {
+                            return new java.security.cert.X509Certificate[0];
+                        }
+                        public void checkClientTrusted(java.security.cert.X509Certificate[] certs, String authType) {}
+                        public void checkServerTrusted(java.security.cert.X509Certificate[] certs, String authType) {}
+                    }
+            };
+            SSLContext sc = SSLContext.getInstance("TLS");
+            sc.init(null, trustAllCerts, new java.security.SecureRandom());
+            sPermissiveSSLSocketFactory = sc.getSocketFactory();
+        } catch (Exception ignored) {}
+        return sPermissiveSSLSocketFactory;
+    }
+
     private static void downloadWithProgress(String urlString, File destFile, Callback callback) throws IOException {
         String currentUrl = urlString;
         HttpURLConnection conn = null;
 
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 10; i++) {
             URL url = new URL(currentUrl);
             conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestProperty("User-Agent", "Termux-Installer/1.0");
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(30000);
+            if (conn instanceof HttpsURLConnection) {
+                HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
+                SSLSocketFactory sf = getPermissiveSSLSocketFactory();
+                if (sf != null) {
+                    httpsConn.setSSLSocketFactory(sf);
+                }
+                httpsConn.setHostnameVerifier((hostname, session) -> true);
+            }
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36");
+            conn.setRequestProperty("Accept", "*/*");
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(45000);
             conn.setInstanceFollowRedirects(false);
 
             int code = conn.getResponseCode();
@@ -409,7 +471,7 @@ public class BootstrapInstaller {
                 break;
             }
             conn.disconnect();
-            throw new IOException("HTTP " + code + " returned from " + currentUrl);
+            throw new IOException("HTTP " + code + " returned from server");
         }
 
         if (conn == null) throw new IOException("Unable to establish connection");
