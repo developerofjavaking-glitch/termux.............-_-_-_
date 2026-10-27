@@ -22,6 +22,14 @@ import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
+/**
+ * Installs the official Termux bootstrap.
+ *
+ * IMPORTANT: the official bootstrap and the official apt repo are built for the
+ * package name "com.termux" (prefix /data/data/com.termux/files/usr). The app's
+ * applicationId MUST therefore be "com.termux", otherwise pkg/apt/pip will not work.
+ * No path patching is done here on purpose.
+ */
 public class BootstrapInstaller {
 
     private static final String TAG = "BootstrapInstaller";
@@ -34,12 +42,10 @@ public class BootstrapInstaller {
     }
 
     public static boolean isInstalled(Context context) {
-        File filesDir = context.getFilesDir();
-        File usr = new File(filesDir, "usr");
-        File pkg = new File(usr, "bin/pkg");
-        File bash = new File(usr, "bin/bash");
-        File apt = new File(usr, "bin/apt");
-        return pkg.exists() && bash.exists() && apt.exists();
+        File usr = new File(context.getFilesDir(), "usr");
+        return new File(usr, "bin/pkg").exists()
+                && new File(usr, "bin/bash").exists()
+                && new File(usr, "bin/apt").exists();
     }
 
     public static String getArch() {
@@ -67,6 +73,11 @@ public class BootstrapInstaller {
         String arch = getArch();
         Log.i(TAG, "Starting bootstrap installation for architecture: " + arch);
 
+        if (!"com.termux".equals(context.getPackageName())) {
+            throw new IOException("applicationId must be com.termux (current: "
+                    + context.getPackageName() + "). Official Termux packages only work with that name.");
+        }
+
         File filesDir = context.getFilesDir();
         File stagingDir = new File(filesDir, "usr-staging");
         File prefixDir = new File(filesDir, "usr");
@@ -78,7 +89,7 @@ public class BootstrapInstaller {
 
         String[] downloadUrls = new String[]{
                 "https://github.com/termux/termux-packages/releases/latest/download/bootstrap-" + arch + ".zip",
-                "https://github.com/termux/termux-packages/releases/download/bootstrap-2024.10.23-r1%2Bapt-android-7/bootstrap-" + arch + ".zip"
+                "https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip"
         };
 
         boolean downloaded = false;
@@ -142,11 +153,8 @@ public class BootstrapInstaller {
                         if (name.startsWith("bin/") || name.startsWith("libexec/") ||
                                 name.startsWith("lib/apt/apt-helper") || name.startsWith("lib/apt/methods/")) {
                             try {
-                                Os.chmod(outFile.getAbsolutePath(), 0755);
+                                Os.chmod(outFile.getAbsolutePath(), 0700);
                             } catch (Exception ignored) {}
-                        }
-                        if (name.startsWith("bin/") || name.startsWith("etc/")) {
-                            patchScriptPaths(outFile, filesDir.getAbsolutePath());
                         }
                     }
                 }
@@ -154,16 +162,9 @@ public class BootstrapInstaller {
             }
         }
 
-        callback.onStatus("Configuring symlinks and permissions...");
+        callback.onStatus("Creating symlinks...");
         for (Pair<String, String> link : symlinks) {
             String target = link.first;
-            if (target.contains("/data/data/com.termux/files") || target.contains("/data/user/0/com.termux/files")) {
-                target = target.replace("/data/data/com.termux/files", filesDir.getAbsolutePath())
-                               .replace("/data/user/0/com.termux/files", filesDir.getAbsolutePath());
-            } else if (target.contains("/data/data/com.termux") || target.contains("/data/user/0/com.termux")) {
-                target = target.replace("/data/data/com.termux", filesDir.getParent())
-                               .replace("/data/user/0/com.termux", filesDir.getParent());
-            }
             String relPath = link.second;
             if (relPath.startsWith("./")) relPath = relPath.substring(2);
             File linkFile = new File(stagingDir, relPath);
@@ -182,121 +183,27 @@ public class BootstrapInstaller {
             deleteRecursive(prefixDir);
         }
         if (!stagingDir.renameTo(prefixDir)) {
-            if (!prefixDir.exists()) prefixDir.mkdirs();
-            File[] items = stagingDir.listFiles();
-            if (items != null) {
-                for (File item : items) {
-                    item.renameTo(new File(prefixDir, item.getName()));
-                }
-            }
-            stagingDir.delete();
+            throw new IOException("Failed to move " + stagingDir + " to " + prefixDir);
         }
 
         File tmpDir = new File(prefixDir, "tmp");
         if (!tmpDir.exists()) tmpDir.mkdirs();
-        try {
-            Os.chmod(tmpDir.getAbsolutePath(), 0777);
-        } catch (Exception ignored) {}
 
-        // Setup APT directories and configuration
-        File aptConfD = new File(prefixDir, "etc/apt/apt.conf.d");
-        aptConfD.mkdirs();
-        File sourcesListD = new File(prefixDir, "etc/apt/sources.list.d");
-        sourcesListD.mkdirs();
-        File varLibDpkg = new File(prefixDir, "var/lib/dpkg");
-        varLibDpkg.mkdirs();
+        // Directories apt/dpkg need (the bootstrap does not always ship them)
         new File(prefixDir, "var/lib/dpkg/updates").mkdirs();
         new File(prefixDir, "var/lib/dpkg/info").mkdirs();
-        File dpkgStatus = new File(varLibDpkg, "status");
-        if (!dpkgStatus.exists()) {
-            writeStringToFile(dpkgStatus, "");
-        }
-        File dpkgAvailable = new File(varLibDpkg, "available");
-        if (!dpkgAvailable.exists()) {
-            writeStringToFile(dpkgAvailable, "");
-        }
-        File aptListsPartial = new File(prefixDir, "var/lib/apt/lists/partial");
-        aptListsPartial.mkdirs();
-        File aptCacheArchives = new File(prefixDir, "var/cache/apt/archives/partial");
-        aptCacheArchives.mkdirs();
+        new File(prefixDir, "var/lib/apt/lists/partial").mkdirs();
+        new File(prefixDir, "var/cache/apt/archives/partial").mkdirs();
+        new File(prefixDir, "var/log/apt").mkdirs();
 
-        File sourcesList = new File(prefixDir, "etc/apt/sources.list");
-        String sourcesContent = "deb https://packages-cf.termux.dev/apt/termux-main stable main\n";
-        writeStringToFile(sourcesList, sourcesContent);
-
-        // Pre-configure chosen mirror so pkg skips slow/broken mirror tests
-        File etcTermux = new File(prefixDir, "etc/termux");
-        etcTermux.mkdirs();
-        writeStringToFile(new File(etcTermux, "chosen_mirror"), "https://packages-cf.termux.dev/apt/termux-main\n");
-
-        File homeTermux = new File(homeDir, ".termux");
-        homeTermux.mkdirs();
-        writeStringToFile(new File(homeTermux, "chosen_mirror"), "https://packages-cf.termux.dev/apt/termux-main\n");
-
-        File aptConf = new File(prefixDir, "etc/apt/apt.conf");
-        String aptConfContent =
-                "Dir \"" + prefixDir.getAbsolutePath() + "\";\n" +
-                "Dir::State \"var/lib/apt\";\n" +
-                "Dir::State::status \"var/lib/dpkg/status\";\n" +
-                "Dir::Cache \"var/cache/apt\";\n" +
-                "Dir::Etc \"etc/apt\";\n" +
-                "Dir::Etc::parts \"apt.conf.d\";\n" +
-                "Dir::Etc::sourcelist \"sources.list\";\n" +
-                "Dir::Etc::sourceparts \"sources.list.d\";\n" +
-                "Dir::Bin::methods \"" + prefixDir.getAbsolutePath() + "/lib/apt/methods\";\n" +
-                "Dir::Bin::dpkg \"" + prefixDir.getAbsolutePath() + "/bin/dpkg\";\n" +
-                "Dir::Bin::apt-key \"" + prefixDir.getAbsolutePath() + "/bin/apt-key\";\n" +
-                "DPkg::Options {\"--admindir=" + prefixDir.getAbsolutePath() + "/var/lib/dpkg\"};\n" +
-                "Acquire::Languages \"none\";\n" +
-                "Acquire::http::Pipeline-Depth \"0\";\n" +
-                "Acquire::https::CaInfo \"" + prefixDir.getAbsolutePath() + "/etc/tls/cert.pem\";\n" +
-                "Acquire::ssl::CaInfo \"" + prefixDir.getAbsolutePath() + "/etc/tls/cert.pem\";\n";
-        writeStringToFile(aptConf, aptConfContent);
-
-        // Setup Pip SSL cert and trusted-host configuration
-        File pipConf = new File(prefixDir, "etc/pip.conf");
-        String pipConfContent = "[global]\n" +
-                "cert = " + prefixDir.getAbsolutePath() + "/etc/tls/cert.pem\n" +
-                "trusted-host = pypi.org pypi.python.org files.pythonhosted.org\n";
-        writeStringToFile(pipConf, pipConfContent);
-        File userPipDir = new File(homeDir, ".config/pip");
-        userPipDir.mkdirs();
-        writeStringToFile(new File(userPipDir, "pip.conf"), pipConfContent);
-
-        // Setup shell environment in profile and .bashrc
-        File profile = new File(prefixDir, "etc/profile");
-        String profileContent =
-                "export PREFIX=\"" + prefixDir.getAbsolutePath() + "\"\n" +
-                "export HOME=\"" + homeDir.getAbsolutePath() + "\"\n" +
-                "export SSL_CERT_FILE=\"$PREFIX/etc/tls/cert.pem\"\n" +
-                "export CURL_CA_BUNDLE=\"$PREFIX/etc/tls/cert.pem\"\n" +
-                "export APT_CONFIG=\"$PREFIX/etc/apt/apt.conf\"\n" +
-                "export TERMUX_APP_PACKAGE_MANAGER=apt\n" +
-                "export PIP_CERT=\"$PREFIX/etc/tls/cert.pem\"\n" +
-                "export REQUESTS_CA_BUNDLE=\"$PREFIX/etc/tls/cert.pem\"\n" +
-                "export PIP_TRUSTED_HOST=\"pypi.org pypi.python.org files.pythonhosted.org\"\n";
-        writeStringToFile(profile, profileContent);
-        writeStringToFile(new File(homeDir, ".bashrc"), profileContent);
-
-        // Copy native redirect shim if available
-        try {
-            File nativeLib = new File(context.getApplicationInfo().nativeLibraryDir, "libboomaxe-redirect.so");
-            File targetLib = new File(prefixDir, "lib/libboomaxe-redirect.so");
-            if (nativeLib.exists()) {
-                copyFile(nativeLib, targetLib);
-                Os.chmod(targetLib.getAbsolutePath(), 0755);
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Failed copying native redirect library", e);
-        }
-
-        // Deep patch all scripts in bin/ and etc/
-        patchAllScripts(new File(prefixDir, "bin"), filesDir.getAbsolutePath());
-        patchAllScripts(new File(prefixDir, "etc"), filesDir.getAbsolutePath());
+        File dpkgStatus = new File(prefixDir, "var/lib/dpkg/status");
+        if (!dpkgStatus.exists()) writeStringToFile(dpkgStatus, "");
+        File dpkgAvailable = new File(prefixDir, "var/lib/dpkg/available");
+        if (!dpkgAvailable.exists()) writeStringToFile(dpkgAvailable, "");
 
         if (tempZip.exists()) tempZip.delete();
 
-        Log.i(TAG, "Termux bootstrap packages installed successfully!");
+        Log.i(TAG, "Termux bootstrap installed successfully!");
         callback.onSuccess();
     }
 
@@ -375,11 +282,12 @@ public class BootstrapInstaller {
     }
 
     public static void deleteRecursive(File fileOrDirectory) {
-        if (fileOrDirectory == null || !fileOrDirectory.exists()) return;
+        if (fileOrDirectory == null) return;
         boolean isSymlink = false;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             isSymlink = java.nio.file.Files.isSymbolicLink(fileOrDirectory.toPath());
         }
+        if (!isSymlink && !fileOrDirectory.exists()) return;
         if (!isSymlink && fileOrDirectory.isDirectory()) {
             File[] files = fileOrDirectory.listFiles();
             if (files != null) {
@@ -391,19 +299,6 @@ public class BootstrapInstaller {
         fileOrDirectory.delete();
     }
 
-    private static void copyFile(File src, File dst) throws IOException {
-        File parent = dst.getParentFile();
-        if (parent != null && !parent.exists()) parent.mkdirs();
-        try (InputStream in = new FileInputStream(src);
-             FileOutputStream out = new FileOutputStream(dst)) {
-            byte[] buf = new byte[8192];
-            int len;
-            while ((len = in.read(buf)) > 0) {
-                out.write(buf, 0, len);
-            }
-        }
-    }
-
     private static void writeStringToFile(File file, String content) throws IOException {
         File parent = file.getParentFile();
         if (parent != null && !parent.exists()) parent.mkdirs();
@@ -411,47 +306,4 @@ public class BootstrapInstaller {
             fos.write(content.getBytes(StandardCharsets.UTF_8));
         }
     }
-
-    private static void patchAllScripts(File dir, String targetPrefix) {
-        if (dir == null || !dir.exists() || !dir.isDirectory()) return;
-        File[] files = dir.listFiles();
-        if (files == null) return;
-        for (File f : files) {
-            if (f.isDirectory()) {
-                patchAllScripts(f, targetPrefix);
-            } else if (f.isFile()) {
-                patchScriptPaths(f, targetPrefix);
             }
-        }
-    }
-
-    private static void patchScriptPaths(File file, String targetPrefix) {
-        if (!file.isFile() || file.length() > 500000) return;
-        try {
-            byte[] bytes = java.nio.file.Files.readAllBytes(file.toPath());
-            // Only patch text files (first 4 bytes not ELF \x7fELF)
-            if (bytes.length >= 4 && bytes[0] == 0x7f && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F') {
-                return;
-            }
-            String content = new String(bytes, StandardCharsets.UTF_8);
-            boolean changed = false;
-            if (content.contains("/data/data/com.termux/files") || content.contains("/data/user/0/com.termux/files")) {
-                content = content.replace("/data/data/com.termux/files", targetPrefix)
-                                 .replace("/data/user/0/com.termux/files", targetPrefix);
-                changed = true;
-            }
-            if (content.contains("/data/data/com.termux") || content.contains("/data/user/0/com.termux")) {
-                File targetFile = new File(targetPrefix);
-                String parentPath = targetFile.getParent();
-                if (parentPath != null) {
-                    content = content.replace("/data/data/com.termux", parentPath)
-                                     .replace("/data/user/0/com.termux", parentPath);
-                    changed = true;
-                }
-            }
-            if (changed) {
-                java.nio.file.Files.write(file.toPath(), content.getBytes(StandardCharsets.UTF_8));
-            }
-        } catch (Exception ignored) {}
-    }
-}
