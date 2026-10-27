@@ -233,7 +233,9 @@ public class BootstrapInstaller {
             deleteRecursive(prefixDir);
         }
         if (!stagingDir.renameTo(prefixDir)) {
-            throw new IOException("Failed to rename " + stagingDir + " to " + prefixDir);
+            Log.w(TAG, "renameTo failed, falling back to recursive copy");
+            copyDirectoryRecursive(stagingDir, prefixDir);
+            deleteRecursive(stagingDir);
         }
 
         setupSystemDirsAndConfigs(context, prefixDir, homeDir);
@@ -275,41 +277,7 @@ public class BootstrapInstaller {
             try { writeStringToFile(dpkgAvailable, ""); } catch (Exception ignored) {}
         }
 
-        // Configure APT with exact absolute paths
-        String aptConfContent = "Dir \"" + prefix + "\";\n" +
-                "Dir::State \"" + prefix + "/var/lib/apt\";\n" +
-                "Dir::State::status \"" + prefix + "/var/lib/dpkg/status\";\n" +
-                "Dir::Cache \"" + prefix + "/var/cache/apt\";\n" +
-                "Dir::Etc \"" + prefix + "/etc/apt\";\n" +
-                "Dir::Bin::methods \"" + prefix + "/lib/apt/methods\";\n" +
-                "Dir::Bin::solvers \"" + prefix + "/lib/apt/solvers\";\n" +
-                "Dir::Bin::dpkg \"" + prefix + "/bin/dpkg\";\n" +
-                "DPkg::Options {\n" +
-                "   \"--force-configure-any\";\n" +
-                "   \"--force-depends\";\n" +
-                "};\n" +
-                "Acquire::Languages \"none\";\n" +
-                "Acquire::http::Timeout \"30\";\n" +
-                "Acquire::https::Timeout \"30\";\n" +
-                "Acquire::https::Verify-Peer \"false\";\n" +
-                "Acquire::https::Verify-Host \"false\";\n" +
-                "Acquire::http::Verify-Peer \"false\";\n" +
-                "Acquire::http::Verify-Host \"false\";\n" +
-                "Acquire::https::CaInfo \"" + prefix + "/etc/tls/cert.pem\";\n";
-        try {
-            writeStringToFile(new File(prefixDir, "etc/apt/apt.conf"), aptConfContent);
-        } catch (Exception ignored) {}
-
-        // Configure curlrc
-        String curlrc = "insecure\n" +
-                "capath = " + prefix + "/etc/ssl/certs\n" +
-                "cacert = " + prefix + "/etc/tls/cert.pem\n";
-        try {
-            writeStringToFile(new File(prefixDir, "etc/curlrc"), curlrc);
-            writeStringToFile(new File(homeDir, ".curlrc"), curlrc);
-        } catch (Exception ignored) {}
-
-        // Read selected mirror preference or default to Cloudflare CDN
+        // Apply official mirror configuration
         SharedPreferences prefs = context.getSharedPreferences("boomaux_prefs", Context.MODE_PRIVATE);
         String mirrorUrl = prefs.getString("package_mirror", MIRROR_CLOUDFLARE);
         applyMirrorConfig(prefixDir, homeDir, mirrorUrl);
@@ -479,6 +447,25 @@ public class BootstrapInstaller {
             while ((read = in.read(buf)) != -1) {
                 out.write(buf, 0, read);
             }
+        }
+    }
+
+    private static void copyDirectoryRecursive(File src, File dest) throws IOException {
+        if (src.isDirectory()) {
+            if (!dest.exists()) dest.mkdirs();
+            File[] children = src.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    copyDirectoryRecursive(child, new File(dest, child.getName()));
+                }
+            }
+        } else {
+            copyFile(src, dest);
+            try {
+                if (src.canExecute()) {
+                    Os.chmod(dest.getAbsolutePath(), 0755);
+                }
+            } catch (Exception ignored) {}
         }
     }
 

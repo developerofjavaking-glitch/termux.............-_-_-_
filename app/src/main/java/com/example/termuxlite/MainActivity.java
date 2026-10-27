@@ -420,7 +420,10 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("ANDROID_DATA=/data");
         env.add("EXTERNAL_STORAGE=/sdcard");
         env.add("TERMUX_APP_PACKAGE_MANAGER=apt");
-        env.add("APT_CONFIG=" + prefix + "/etc/apt/apt.conf");
+        File aptConf = new File(prefix, "etc/apt/apt.conf");
+        if (aptConf.exists()) {
+            env.add("APT_CONFIG=" + aptConf.getAbsolutePath());
+        }
         env.add("SSL_CERT_FILE=" + prefix + "/etc/tls/cert.pem");
         env.add("SSL_CERT_DIR=" + prefix + "/etc/ssl/certs");
         env.add("CURL_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
