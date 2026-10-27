@@ -211,6 +211,10 @@ public class BootstrapInstaller {
         if (!dpkgStatus.exists()) {
             writeStringToFile(dpkgStatus, "");
         }
+        File dpkgAvailable = new File(varLibDpkg, "available");
+        if (!dpkgAvailable.exists()) {
+            writeStringToFile(dpkgAvailable, "");
+        }
         File aptListsPartial = new File(prefixDir, "var/lib/apt/lists/partial");
         aptListsPartial.mkdirs();
         File aptCacheArchives = new File(prefixDir, "var/cache/apt/archives/partial");
@@ -219,6 +223,15 @@ public class BootstrapInstaller {
         File sourcesList = new File(prefixDir, "etc/apt/sources.list");
         String sourcesContent = "deb https://packages-cf.termux.dev/apt/termux-main stable main\n";
         writeStringToFile(sourcesList, sourcesContent);
+
+        // Pre-configure chosen mirror so pkg skips slow/broken mirror tests
+        File etcTermux = new File(prefixDir, "etc/termux");
+        etcTermux.mkdirs();
+        writeStringToFile(new File(etcTermux, "chosen_mirror"), "https://packages-cf.termux.dev/apt/termux-main\n");
+
+        File homeTermux = new File(homeDir, ".termux");
+        homeTermux.mkdirs();
+        writeStringToFile(new File(homeTermux, "chosen_mirror"), "https://packages-cf.termux.dev/apt/termux-main\n");
 
         File aptConf = new File(prefixDir, "etc/apt/apt.conf");
         String aptConfContent =
@@ -234,12 +247,17 @@ public class BootstrapInstaller {
                 "Dir::Bin::dpkg \"" + prefixDir.getAbsolutePath() + "/bin/dpkg\";\n" +
                 "Dir::Bin::apt-key \"" + prefixDir.getAbsolutePath() + "/bin/apt-key\";\n" +
                 "DPkg::Options {\"--admindir=" + prefixDir.getAbsolutePath() + "/var/lib/dpkg\"};\n" +
-                "Acquire::Languages \"none\";\n";
+                "Acquire::Languages \"none\";\n" +
+                "Acquire::http::Pipeline-Depth \"0\";\n" +
+                "Acquire::https::CaInfo \"" + prefixDir.getAbsolutePath() + "/etc/tls/cert.pem\";\n" +
+                "Acquire::ssl::CaInfo \"" + prefixDir.getAbsolutePath() + "/etc/tls/cert.pem\";\n";
         writeStringToFile(aptConf, aptConfContent);
 
-        // Setup Pip SSL cert configuration
+        // Setup Pip SSL cert and trusted-host configuration
         File pipConf = new File(prefixDir, "etc/pip.conf");
-        String pipConfContent = "[global]\ncert = " + prefixDir.getAbsolutePath() + "/etc/tls/cert.pem\n";
+        String pipConfContent = "[global]\n" +
+                "cert = " + prefixDir.getAbsolutePath() + "/etc/tls/cert.pem\n" +
+                "trusted-host = pypi.org pypi.python.org files.pythonhosted.org\n";
         writeStringToFile(pipConf, pipConfContent);
         File userPipDir = new File(homeDir, ".config/pip");
         userPipDir.mkdirs();
@@ -255,7 +273,8 @@ public class BootstrapInstaller {
                 "export APT_CONFIG=\"$PREFIX/etc/apt/apt.conf\"\n" +
                 "export TERMUX_APP_PACKAGE_MANAGER=apt\n" +
                 "export PIP_CERT=\"$PREFIX/etc/tls/cert.pem\"\n" +
-                "export REQUESTS_CA_BUNDLE=\"$PREFIX/etc/tls/cert.pem\"\n";
+                "export REQUESTS_CA_BUNDLE=\"$PREFIX/etc/tls/cert.pem\"\n" +
+                "export PIP_TRUSTED_HOST=\"pypi.org pypi.python.org files.pythonhosted.org\"\n";
         writeStringToFile(profile, profileContent);
         writeStringToFile(new File(homeDir, ".bashrc"), profileContent);
 

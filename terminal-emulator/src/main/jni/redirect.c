@@ -245,27 +245,120 @@ int rename(const char* oldpath, const char* newpath) {
     const char* rold = redirect_path(oldpath, buf1, sizeof(buf1));
     const char* rnew = redirect_path(newpath, buf2, sizeof(buf2));
     static int (*real_fn)(const char*, const char*) = NULL;
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "rename");
+    if (!real_fn) real_fn = (int (*)(const char*, const char*)) dlsym(RTLD_NEXT, "rename");
     return real_fn ? real_fn(rold, rnew) : -1;
+}
+
+int renameat(int olddirfd, const char* oldpath, int newdirfd, const char* newpath) {
+    char buf1[1024], buf2[1024];
+    const char* rold = redirect_path(oldpath, buf1, sizeof(buf1));
+    const char* rnew = redirect_path(newpath, buf2, sizeof(buf2));
+    static int (*real_fn)(int, const char*, int, const char*) = NULL;
+    if (!real_fn) real_fn = (int (*)(int, const char*, int, const char*)) dlsym(RTLD_NEXT, "renameat");
+    return real_fn ? real_fn(olddirfd, rold, newdirfd, rnew) : -1;
+}
+
+int symlink(const char* target, const char* linkpath) {
+    char buf1[1024], buf2[1024];
+    const char* rtarget = redirect_path(target, buf1, sizeof(buf1));
+    const char* rlink = redirect_path(linkpath, buf2, sizeof(buf2));
+    static int (*real_fn)(const char*, const char*) = NULL;
+    if (!real_fn) real_fn = (int (*)(const char*, const char*)) dlsym(RTLD_NEXT, "symlink");
+    return real_fn ? real_fn(rtarget, rlink) : -1;
+}
+
+int symlinkat(const char* target, int newdirfd, const char* linkpath) {
+    char buf1[1024], buf2[1024];
+    const char* rtarget = redirect_path(target, buf1, sizeof(buf1));
+    const char* rlink = redirect_path(linkpath, buf2, sizeof(buf2));
+    static int (*real_fn)(const char*, int, const char*) = NULL;
+    if (!real_fn) real_fn = (int (*)(const char*, int, const char*)) dlsym(RTLD_NEXT, "symlinkat");
+    return real_fn ? real_fn(rtarget, newdirfd, rlink) : -1;
+}
+
+int link(const char* oldpath, const char* newpath) {
+    char buf1[1024], buf2[1024];
+    const char* rold = redirect_path(oldpath, buf1, sizeof(buf1));
+    const char* rnew = redirect_path(newpath, buf2, sizeof(buf2));
+    static int (*real_fn)(const char*, const char*) = NULL;
+    if (!real_fn) real_fn = (int (*)(const char*, const char*)) dlsym(RTLD_NEXT, "link");
+    return real_fn ? real_fn(rold, rnew) : -1;
+}
+
+int linkat(int olddirfd, const char* oldpath, int newdirfd, const char* newpath, int flags) {
+    char buf1[1024], buf2[1024];
+    const char* rold = redirect_path(oldpath, buf1, sizeof(buf1));
+    const char* rnew = redirect_path(newpath, buf2, sizeof(buf2));
+    static int (*real_fn)(int, const char*, int, const char*, int) = NULL;
+    if (!real_fn) real_fn = (int (*)(int, const char*, int, const char*, int)) dlsym(RTLD_NEXT, "linkat");
+    return real_fn ? real_fn(olddirfd, rold, newdirfd, rnew, flags) : -1;
+}
+
+int creat(const char* pathname, mode_t mode) {
+    char buf[1024];
+    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
+    static int (*real_fn)(const char*, mode_t) = NULL;
+    if (!real_fn) real_fn = (int (*)(const char*, mode_t)) dlsym(RTLD_NEXT, "creat");
+    return real_fn ? real_fn(rpath, mode) : -1;
+}
+
+int remove(const char* pathname) {
+    char buf[1024];
+    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
+    static int (*real_fn)(const char*) = NULL;
+    if (!real_fn) real_fn = (int (*)(const char*)) dlsym(RTLD_NEXT, "remove");
+    return real_fn ? real_fn(rpath) : -1;
 }
 
 int chmod(const char* pathname, mode_t mode) {
     char buf[1024];
     const char* rpath = redirect_path(pathname, buf, sizeof(buf));
     static int (*real_fn)(const char*, mode_t) = NULL;
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "chmod");
+    if (!real_fn) real_fn = (int (*)(const char*, mode_t)) dlsym(RTLD_NEXT, "chmod");
     return real_fn ? real_fn(rpath, mode) : -1;
 }
 
-// ---------------------------------------------------------------- execve
+int fchmodat(int dirfd, const char* pathname, mode_t mode, int flags) {
+    char buf[1024];
+    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
+    static int (*real_fn)(int, const char*, mode_t, int) = NULL;
+    if (!real_fn) real_fn = (int (*)(int, const char*, mode_t, int)) dlsym(RTLD_NEXT, "fchmodat");
+    return real_fn ? real_fn(dirfd, rpath, mode, flags) : -1;
+}
+
+int chown(const char* pathname, uid_t owner, gid_t group) {
+    char buf[1024];
+    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
+    static int (*real_fn)(const char*, uid_t, gid_t) = NULL;
+    if (!real_fn) real_fn = (int (*)(const char*, uid_t, gid_t)) dlsym(RTLD_NEXT, "chown");
+    return real_fn ? real_fn(rpath, owner, group) : -1;
+}
+
+int lchown(const char* pathname, uid_t owner, gid_t group) {
+    char buf[1024];
+    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
+    static int (*real_fn)(const char*, uid_t, gid_t) = NULL;
+    if (!real_fn) real_fn = (int (*)(const char*, uid_t, gid_t)) dlsym(RTLD_NEXT, "lchown");
+    return real_fn ? real_fn(rpath, owner, group) : -1;
+}
+
+int fchownat(int dirfd, const char* pathname, uid_t owner, gid_t group, int flags) {
+    char buf[1024];
+    const char* rpath = redirect_path(pathname, buf, sizeof(buf));
+    static int (*real_fn)(int, const char*, uid_t, gid_t, int) = NULL;
+    if (!real_fn) real_fn = (int (*)(int, const char*, uid_t, gid_t, int)) dlsym(RTLD_NEXT, "fchownat");
+    return real_fn ? real_fn(dirfd, rpath, owner, group, flags) : -1;
+}
+
+// ---------------------------------------------------------------- execve / execv / execvp
 
 int execve(const char* filename, char* const argv[], char* const envp[]) {
     char buf[1024];
     const char* rpath = redirect_path(filename, buf, sizeof(buf));
     static int (*real_fn)(const char*, char* const[], char* const[]) = NULL;
-    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "execve");
+    if (!real_fn) real_fn = (int (*)(const char*, char* const[], char* const[])) dlsym(RTLD_NEXT, "execve");
 
-    // Check if rpath is a script with a hardcoded Termux shebang
+    // Check if rpath is a script with a shebang
     int fd = open(rpath, O_RDONLY | O_CLOEXEC);
     if (fd >= 0) {
         char header[256];
@@ -276,19 +369,46 @@ int execve(const char* filename, char* const argv[], char* const envp[]) {
             char* newline = strchr(header, '\n');
             if (newline) *newline = '\0';
             char* interp = header + 2;
-            while (*interp == ' ') interp++;
+            while (*interp == ' ' || *interp == '\t') interp++;
+            char* shebang_arg = NULL;
+            char* space = strpbrk(interp, " \t");
+            if (space) {
+                *space = '\0';
+                shebang_arg = space + 1;
+                while (*shebang_arg == ' ' || *shebang_arg == '\t') shebang_arg++;
+                if (!*shebang_arg) shebang_arg = NULL;
+            }
+
+            char interp_buf[512];
+            const char* real_interp = interp;
             if (strstr(interp, "com.termux/files")) {
-                char interp_buf[512];
-                const char* real_interp = redirect_path(interp, interp_buf, sizeof(interp_buf));
-                // Build new argv: [real_interp, rpath, original_argv[1...]]
+                real_interp = redirect_path(interp, interp_buf, sizeof(interp_buf));
+            } else if (strcmp(interp, "/bin/sh") == 0 || strcmp(interp, "/usr/bin/sh") == 0) {
+                init_redirect_paths();
+                if (g_real_files[0]) {
+                    snprintf(interp_buf, sizeof(interp_buf), "%s/usr/bin/sh", g_real_files);
+                    real_interp = interp_buf;
+                }
+            } else if (strcmp(interp, "/usr/bin/env") == 0 || strcmp(interp, "/bin/env") == 0) {
+                init_redirect_paths();
+                if (g_real_files[0]) {
+                    snprintf(interp_buf, sizeof(interp_buf), "%s/usr/bin/env", g_real_files);
+                    real_interp = interp_buf;
+                }
+            }
+
+            if (real_interp != interp) {
                 int argc = 0;
                 while (argv && argv[argc]) argc++;
-                char** new_argv = (char**) malloc(sizeof(char*) * (argc + 2));
+                int extra = shebang_arg ? 3 : 2;
+                char** new_argv = (char**) malloc(sizeof(char*) * (argc + extra));
                 if (new_argv) {
-                    new_argv[0] = (char*) real_interp;
-                    new_argv[1] = (char*) rpath;
+                    int idx = 0;
+                    new_argv[idx++] = (char*) real_interp;
+                    if (shebang_arg) new_argv[idx++] = (char*) shebang_arg;
+                    new_argv[idx++] = (char*) rpath;
                     for (int i = 1; i <= argc; i++) {
-                        new_argv[i + 1] = argv[i];
+                        new_argv[idx++] = argv[i];
                     }
                     return real_fn(real_interp, new_argv, envp);
                 }
@@ -302,4 +422,11 @@ int execve(const char* filename, char* const argv[], char* const envp[]) {
 int execv(const char* path, char* const argv[]) {
     extern char** environ;
     return execve(path, argv, environ);
+}
+
+int execvp(const char* file, char* const argv[]) {
+    extern char** environ;
+    char buf[1024];
+    const char* rpath = redirect_path(file, buf, sizeof(buf));
+    return execve(rpath, argv, environ);
 }

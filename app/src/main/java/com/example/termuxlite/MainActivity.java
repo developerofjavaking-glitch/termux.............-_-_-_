@@ -311,6 +311,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("CURL_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
         env.add("PIP_CERT=" + prefix + "/etc/tls/cert.pem");
         env.add("REQUESTS_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
+        env.add("PIP_TRUSTED_HOST=pypi.org pypi.python.org files.pythonhosted.org");
         env.add("TERMUX_APP_PACKAGE_MANAGER=apt");
 
         File bash = new File(binDir, "bash");
