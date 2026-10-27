@@ -298,20 +298,11 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("HOME=" + home.getAbsolutePath());
         env.add("TMPDIR=" + tmp.getAbsolutePath());
         env.add("PREFIX=" + prefix);
-        env.add("BOOMAXE_FILES=" + filesDir.getAbsolutePath());
-        env.add("BOOMAXE_PREFIX=" + prefix);
         env.add("LANG=en_US.UTF-8");
-        env.add("PATH=" + binDir + ":" + appletsDir + ":" + filesDir.getAbsolutePath() + "/bin:/system/bin:/system/xbin:/vendor/bin");
+        env.add("PATH=" + binDir + ":" + appletsDir + ":/system/bin");
         env.add("ANDROID_ROOT=/system");
         env.add("ANDROID_DATA=/data");
         env.add("EXTERNAL_STORAGE=/sdcard");
-        env.add("LD_LIBRARY_PATH=" + prefix + "/lib");
-        env.add("APT_CONFIG=" + prefix + "/etc/apt/apt.conf");
-        env.add("SSL_CERT_FILE=" + prefix + "/etc/tls/cert.pem");
-        env.add("CURL_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
-        env.add("PIP_CERT=" + prefix + "/etc/tls/cert.pem");
-        env.add("REQUESTS_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
-        env.add("PIP_TRUSTED_HOST=pypi.org pypi.python.org files.pythonhosted.org");
         env.add("TERMUX_APP_PACKAGE_MANAGER=apt");
 
         File bash = new File(binDir, "bash");
@@ -321,25 +312,11 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             env.add("SHELL=/system/bin/sh");
         }
 
-        File nativeRedirect = new File(getApplicationInfo().nativeLibraryDir, "libboomaxe-redirect.so");
-        File prefixRedirect = new File(prefix, "lib/libboomaxe-redirect.so");
-        String redirectPath = null;
-        if (nativeRedirect.exists()) {
-            redirectPath = nativeRedirect.getAbsolutePath();
-        } else if (prefixRedirect.exists()) {
-            redirectPath = prefixRedirect.getAbsolutePath();
-        }
-
         File termuxExec = new File(prefix, "lib/libtermux-exec-ld-preload.so");
         if (!termuxExec.exists()) {
             termuxExec = new File(prefix, "lib/libtermux-exec.so");
         }
-
-        if (redirectPath != null && termuxExec.exists()) {
-            env.add("LD_PRELOAD=" + redirectPath + ":" + termuxExec.getAbsolutePath());
-        } else if (redirectPath != null) {
-            env.add("LD_PRELOAD=" + redirectPath);
-        } else if (termuxExec.exists()) {
+        if (termuxExec.exists()) {
             env.add("LD_PRELOAD=" + termuxExec.getAbsolutePath());
         }
 
@@ -594,4 +571,4 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     @Override public void logVerbose(String tag, String message) { Log.v(tag, message); }
     @Override public void logStackTraceWithMessage(String tag, String message, Exception e) { Log.e(tag, message, e); }
     @Override public void logStackTrace(String tag, Exception e) { Log.e(tag, "error", e); }
-}
+    }
