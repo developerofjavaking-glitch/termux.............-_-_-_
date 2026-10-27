@@ -317,6 +317,9 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("REQUESTS_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
         env.add("PIP_CERT=" + prefix + "/etc/tls/cert.pem");
         env.add("PIP_CONFIG_FILE=" + prefix + "/etc/pip.conf");
+        env.add("CURL_HOME=" + home.getAbsolutePath());
+        env.add("PYTHONHTTPSVERIFY=0");
+        env.add("PIP_TRUSTED_HOST=pypi.org pypi.python.org files.pythonhosted.org");
 
         File bash = new File(binDir, "bash");
         if (bash.exists()) {

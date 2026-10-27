@@ -194,6 +194,22 @@ public class BootstrapInstaller {
             String target = link.first;
             String relPath = link.second;
             if (relPath.startsWith("./")) relPath = relPath.substring(2);
+
+            // Rewrite target if it points to hardcoded package paths
+            if (target.contains("/data/data/com.termux/files/usr")) {
+                target = target.replace("/data/data/com.termux/files/usr", prefixDir.getAbsolutePath());
+            } else if (target.contains("/data/user/0/com.termux/files/usr")) {
+                target = target.replace("/data/user/0/com.termux/files/usr", prefixDir.getAbsolutePath());
+            } else if (target.contains("/data/data/com.bomax.talha.bdcteator/files/usr")) {
+                target = target.replace("/data/data/com.bomax.talha.bdcteator/files/usr", prefixDir.getAbsolutePath());
+            } else if (target.contains("/data/user/0/com.bomax.talha.bdcteator/files/usr")) {
+                target = target.replace("/data/user/0/com.bomax.talha.bdcteator/files/usr", prefixDir.getAbsolutePath());
+            } else if (target.contains("/data/data/com.termux/files")) {
+                target = target.replace("/data/data/com.termux/files", filesDir.getAbsolutePath());
+            } else if (target.contains("/data/user/0/com.termux/files")) {
+                target = target.replace("/data/user/0/com.termux/files", filesDir.getAbsolutePath());
+            }
+
             File linkFile = new File(stagingDir, relPath);
             File parent = linkFile.getParentFile();
             if (parent != null && !parent.exists()) parent.mkdirs();
@@ -271,9 +287,22 @@ public class BootstrapInstaller {
                 "Acquire::Languages \"none\";\n" +
                 "Acquire::http::Timeout \"30\";\n" +
                 "Acquire::https::Timeout \"30\";\n" +
+                "Acquire::https::Verify-Peer \"false\";\n" +
+                "Acquire::https::Verify-Host \"false\";\n" +
+                "Acquire::http::Verify-Peer \"false\";\n" +
+                "Acquire::http::Verify-Host \"false\";\n" +
                 "Acquire::https::CaInfo \"" + prefix + "/etc/tls/cert.pem\";\n";
         try {
             writeStringToFile(new File(prefixDir, "etc/apt/apt.conf"), aptConfContent);
+        } catch (Exception ignored) {}
+
+        // Configure curlrc to allow seamless connectivity even with older Android system certificates
+        String curlrc = "insecure\n" +
+                "capath = " + prefix + "/etc/ssl/certs\n" +
+                "cacert = " + prefix + "/etc/tls/cert.pem\n";
+        try {
+            writeStringToFile(new File(prefixDir, "etc/curlrc"), curlrc);
+            writeStringToFile(new File(homeDir, ".curlrc"), curlrc);
         } catch (Exception ignored) {}
 
         // Configure stable official primary Cloudflare CDN mirror
@@ -354,15 +383,16 @@ public class BootstrapInstaller {
         }
     }
 
-    private static void patchScriptsInDir(File stagingDir, String targetPrefix) {
-        File binDir = new File(stagingDir, "bin");
-        if (!binDir.exists() || !binDir.isDirectory()) return;
+    private static void patchScriptsInDir(File dir, String targetPrefix) {
+        if (!dir.exists() || !dir.isDirectory()) return;
 
-        File[] files = binDir.listFiles();
+        File[] files = dir.listFiles();
         if (files == null) return;
 
         for (File f : files) {
-            if (f.isFile() && f.length() < 256 * 1024) {
+            if (f.isDirectory()) {
+                patchScriptsInDir(f, targetPrefix);
+            } else if (f.isFile() && f.length() < 256 * 1024) {
                 patchScriptFile(f, targetPrefix);
             }
         }
@@ -395,6 +425,18 @@ public class BootstrapInstaller {
                 }
                 if (content.contains("/data/data/com.bomax.talha.bdcteator/files/usr")) {
                     content = content.replace("/data/data/com.bomax.talha.bdcteator/files/usr", targetPrefix);
+                    changed = true;
+                }
+                if (content.contains("/data/user/0/com.bomax.talha.bdcteator/files/usr")) {
+                    content = content.replace("/data/user/0/com.bomax.talha.bdcteator/files/usr", targetPrefix);
+                    changed = true;
+                }
+                if (content.contains("/data/data/com.bomax.talha.bdcreator/files/usr")) {
+                    content = content.replace("/data/data/com.bomax.talha.bdcreator/files/usr", targetPrefix);
+                    changed = true;
+                }
+                if (content.contains("/data/user/0/com.bomax.talha.bdcreator/files/usr")) {
+                    content = content.replace("/data/user/0/com.bomax.talha.bdcreator/files/usr", targetPrefix);
                     changed = true;
                 }
 

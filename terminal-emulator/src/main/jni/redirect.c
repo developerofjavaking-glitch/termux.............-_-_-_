@@ -13,12 +13,17 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <spawn.h>
 
 static const char* const kTargetPrefixes[] = {
     "/data/data/com.termux/files",
     "/data/user/0/com.termux/files",
     "/data/data/com.bomax.talha.bdcteator/files",
     "/data/user/0/com.bomax.talha.bdcteator/files",
+    "/data/data/com.bomax.talha.bdcreator/files",
+    "/data/user/0/com.bomax.talha.bdcreator/files",
+    "/data/data/com.boomaux.boom.bdcreator/files",
+    "/data/user/0/com.boomaux.boom.bdcreator/files",
     "/data/data/com.example.termuxlite/files",
     "/data/user/0/com.example.termuxlite/files",
     NULL
@@ -29,6 +34,10 @@ static const char* const kTargetAppDirs[] = {
     "/data/user/0/com.termux",
     "/data/data/com.bomax.talha.bdcteator",
     "/data/user/0/com.bomax.talha.bdcteator",
+    "/data/data/com.bomax.talha.bdcreator",
+    "/data/user/0/com.bomax.talha.bdcreator",
+    "/data/data/com.boomaux.boom.bdcreator",
+    "/data/user/0/com.boomaux.boom.bdcreator",
     "/data/data/com.example.termuxlite",
     "/data/user/0/com.example.termuxlite",
     NULL
@@ -36,6 +45,7 @@ static const char* const kTargetAppDirs[] = {
 
 static char g_real_files[512] = {0};
 static char g_real_app[512] = {0};
+static char g_real_prefix[512] = {0};
 static int g_initialized = 0;
 
 static void init_redirect_paths(void) {
@@ -56,7 +66,7 @@ static void init_redirect_paths(void) {
             if (usr_part) *usr_part = '\0';
             strncpy(g_real_files, temp, sizeof(g_real_files) - 1);
         } else {
-            // Default fallback
+            // Default package path
             strncpy(g_real_files, "/data/data/com.boomaux.boom.bdcreator/files", sizeof(g_real_files) - 1);
         }
     }
@@ -65,6 +75,8 @@ static void init_redirect_paths(void) {
         strncpy(g_real_app, g_real_files, sizeof(g_real_app) - 1);
         char* files_part = strstr(g_real_app, "/files");
         if (files_part) *files_part = '\0';
+
+        snprintf(g_real_prefix, sizeof(g_real_prefix), "%s/usr", g_real_files);
     }
 
     g_initialized = 1;
@@ -75,6 +87,7 @@ static const char* redirect_path(const char* path, char* buffer, size_t bufsize)
     init_redirect_paths();
     if (!g_real_files[0]) return path;
 
+    // 1. Check known prefixes
     for (int i = 0; kTargetPrefixes[i] != NULL; i++) {
         size_t len = strlen(kTargetPrefixes[i]);
         if (strncmp(path, kTargetPrefixes[i], len) == 0) {
@@ -89,6 +102,36 @@ static const char* redirect_path(const char* path, char* buffer, size_t bufsize)
             snprintf(buffer, bufsize, "%s%s", g_real_app, path + len);
             return buffer;
         }
+    }
+
+    // 2. Redirect standard virtual Unix paths that Android lacks
+    if (strcmp(path, "/bin/sh") == 0 || strcmp(path, "/usr/bin/sh") == 0) {
+        snprintf(buffer, bufsize, "%s/bin/sh", g_real_prefix);
+        return buffer;
+    }
+    if (strcmp(path, "/bin/bash") == 0 || strcmp(path, "/usr/bin/bash") == 0) {
+        snprintf(buffer, bufsize, "%s/bin/bash", g_real_prefix);
+        return buffer;
+    }
+    if (strcmp(path, "/usr/bin/env") == 0 || strcmp(path, "/bin/env") == 0) {
+        snprintf(buffer, bufsize, "%s/bin/env", g_real_prefix);
+        return buffer;
+    }
+    if (strcmp(path, "/tmp") == 0 || strcmp(path, "/tmp/") == 0) {
+        snprintf(buffer, bufsize, "%s/tmp", g_real_prefix);
+        return buffer;
+    }
+    if (strncmp(path, "/tmp/", 5) == 0) {
+        snprintf(buffer, bufsize, "%s/tmp/%s", g_real_prefix, path + 5);
+        return buffer;
+    }
+    if (strcmp(path, "/var/tmp") == 0 || strcmp(path, "/var/tmp/") == 0) {
+        snprintf(buffer, bufsize, "%s/var/tmp", g_real_prefix);
+        return buffer;
+    }
+    if (strncmp(path, "/var/tmp/", 9) == 0) {
+        snprintf(buffer, bufsize, "%s/var/tmp/%s", g_real_prefix, path + 9);
+        return buffer;
     }
 
     return path;
@@ -244,7 +287,7 @@ int faccessat(int dirfd, const char* pathname, int mode, int flags) {
     return real_fn ? real_fn(dirfd, rpath, mode, flags) : -1;
 }
 
-// ---------------------------------------------------------------- directories
+// ---------------------------------------------------------------- directories & scandir
 
 DIR* opendir(const char* name) {
     char buf[1024];
@@ -286,6 +329,57 @@ int rmdir(const char* pathname) {
     return real_fn ? real_fn(rpath) : -1;
 }
 
+// Critical: scandir / scandir64 / scandirat / scandirat64
+int scandir(const char* dirp, struct dirent*** namelist,
+            int (*filter)(const struct dirent*),
+            int (*compar)(const struct dirent**, const struct dirent**)) {
+    char buf[1024];
+    const char* rpath = redirect_path(dirp, buf, sizeof(buf));
+    static int (*real_fn)(const char*, struct dirent***,
+                          int (*)(const struct dirent*),
+                          int (*)(const struct dirent**, const struct dirent**)) = NULL;
+    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "scandir");
+    return real_fn ? real_fn(rpath, namelist, filter, compar) : -1;
+}
+
+int scandir64(const char* dirp, struct dirent64*** namelist,
+              int (*filter)(const struct dirent64*),
+              int (*compar)(const struct dirent64**, const struct dirent64**)) {
+    char buf[1024];
+    const char* rpath = redirect_path(dirp, buf, sizeof(buf));
+    static int (*real_fn)(const char*, struct dirent64***,
+                          int (*)(const struct dirent64*),
+                          int (*)(const struct dirent64**, const struct dirent64**)) = NULL;
+    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "scandir64");
+    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "scandir");
+    return real_fn ? real_fn(rpath, namelist, filter, compar) : -1;
+}
+
+int scandirat(int dirfd, const char* dirp, struct dirent*** namelist,
+              int (*filter)(const struct dirent*),
+              int (*compar)(const struct dirent**, const struct dirent**)) {
+    char buf[1024];
+    const char* rpath = redirect_path(dirp, buf, sizeof(buf));
+    static int (*real_fn)(int, const char*, struct dirent***,
+                          int (*)(const struct dirent*),
+                          int (*)(const struct dirent**, const struct dirent**)) = NULL;
+    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "scandirat");
+    return real_fn ? real_fn(dirfd, rpath, namelist, filter, compar) : -1;
+}
+
+int scandirat64(int dirfd, const char* dirp, struct dirent64*** namelist,
+                int (*filter)(const struct dirent64*),
+                int (*compar)(const struct dirent64**, const struct dirent64**)) {
+    char buf[1024];
+    const char* rpath = redirect_path(dirp, buf, sizeof(buf));
+    static int (*real_fn)(int, const char*, struct dirent64***,
+                          int (*)(const struct dirent64*),
+                          int (*)(const struct dirent64**, const struct dirent64**)) = NULL;
+    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "scandirat64");
+    if (!real_fn) real_fn = dlsym(RTLD_NEXT, "scandirat");
+    return real_fn ? real_fn(dirfd, rpath, namelist, filter, compar) : -1;
+}
+
 // ---------------------------------------------------------------- readlink / unlink / rename / symlink
 
 ssize_t readlink(const char* pathname, char* out_buf, size_t bufsiz) {
@@ -293,7 +387,20 @@ ssize_t readlink(const char* pathname, char* out_buf, size_t bufsiz) {
     const char* rpath = redirect_path(pathname, buf, sizeof(buf));
     static ssize_t (*real_fn)(const char*, char*, size_t) = NULL;
     if (!real_fn) real_fn = dlsym(RTLD_NEXT, "readlink");
-    return real_fn ? real_fn(rpath, out_buf, bufsiz) : -1;
+    ssize_t ret = real_fn ? real_fn(rpath, out_buf, bufsiz) : -1;
+    if (ret > 0 && (size_t) ret < bufsiz) {
+        out_buf[ret] = '\0';
+        char rewritten[1024];
+        const char* red = redirect_path(out_buf, rewritten, sizeof(rewritten));
+        if (red != out_buf) {
+            size_t new_len = strlen(red);
+            if (new_len < bufsiz) {
+                memcpy(out_buf, red, new_len + 1);
+                ret = (ssize_t) new_len;
+            }
+        }
+    }
+    return ret;
 }
 
 ssize_t readlinkat(int dirfd, const char* pathname, char* out_buf, size_t bufsiz) {
@@ -301,7 +408,20 @@ ssize_t readlinkat(int dirfd, const char* pathname, char* out_buf, size_t bufsiz
     const char* rpath = redirect_path(pathname, buf, sizeof(buf));
     static ssize_t (*real_fn)(int, const char*, char*, size_t) = NULL;
     if (!real_fn) real_fn = dlsym(RTLD_NEXT, "readlinkat");
-    return real_fn ? real_fn(dirfd, rpath, out_buf, bufsiz) : -1;
+    ssize_t ret = real_fn ? real_fn(dirfd, rpath, out_buf, bufsiz) : -1;
+    if (ret > 0 && (size_t) ret < bufsiz) {
+        out_buf[ret] = '\0';
+        char rewritten[1024];
+        const char* red = redirect_path(out_buf, rewritten, sizeof(rewritten));
+        if (red != out_buf) {
+            size_t new_len = strlen(red);
+            if (new_len < bufsiz) {
+                memcpy(out_buf, red, new_len + 1);
+                ret = (ssize_t) new_len;
+            }
+        }
+    }
+    return ret;
 }
 
 char* realpath(const char* path, char* resolved_path) {
@@ -309,7 +429,15 @@ char* realpath(const char* path, char* resolved_path) {
     const char* rpath = redirect_path(path, buf, sizeof(buf));
     static char* (*real_fn)(const char*, char*) = NULL;
     if (!real_fn) real_fn = (char* (*)(const char*, char*)) dlsym(RTLD_NEXT, "realpath");
-    return real_fn ? real_fn(rpath, resolved_path) : NULL;
+    char* res = real_fn ? real_fn(rpath, resolved_path) : NULL;
+    if (res != NULL) {
+        char temp[1024];
+        const char* red = redirect_path(res, temp, sizeof(temp));
+        if (red != res) {
+            strcpy(res, red);
+        }
+    }
+    return res;
 }
 
 int unlink(const char* pathname) {
@@ -489,7 +617,62 @@ int statfs(const char* path, struct statfs* buf) {
     return real_fn ? real_fn(rpath, buf) : -1;
 }
 
-// ---------------------------------------------------------------- execve / execv / execvp
+// ---------------------------------------------------------------- execve / execv / execvp / execvpe / posix_spawn
+
+static int check_script_shebang(const char* rpath, char* interp_buf, size_t interp_buf_size, char** shebang_arg_out) {
+    int fd = open(rpath, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+
+    char header[256];
+    ssize_t n = read(fd, header, sizeof(header) - 1);
+    close(fd);
+    if (n <= 2 || header[0] != '#' || header[1] != '!') {
+        return 0;
+    }
+
+    header[n] = '\0';
+    char* newline = strchr(header, '\n');
+    if (newline) *newline = '\0';
+    char* interp = header + 2;
+    while (*interp == ' ' || *interp == '\t') interp++;
+    char* shebang_arg = NULL;
+    char* space = strpbrk(interp, " \t");
+    if (space) {
+        *space = '\0';
+        shebang_arg = space + 1;
+        while (*shebang_arg == ' ' || *shebang_arg == '\t') shebang_arg++;
+        if (!*shebang_arg) shebang_arg = NULL;
+    }
+
+    init_redirect_paths();
+
+    const char* real_interp = interp;
+    char temp[512];
+    if (strstr(interp, "com.termux") || strstr(interp, "com.bomax") ||
+        strstr(interp, "com.boomaux") || strstr(interp, "com.example.termuxlite")) {
+        real_interp = redirect_path(interp, temp, sizeof(temp));
+    } else if (strcmp(interp, "/bin/sh") == 0 || strcmp(interp, "/usr/bin/sh") == 0) {
+        if (g_real_prefix[0]) {
+            snprintf(temp, sizeof(temp), "%s/bin/sh", g_real_prefix);
+            real_interp = temp;
+        }
+    } else if (strcmp(interp, "/bin/bash") == 0 || strcmp(interp, "/usr/bin/bash") == 0) {
+        if (g_real_prefix[0]) {
+            snprintf(temp, sizeof(temp), "%s/bin/bash", g_real_prefix);
+            real_interp = temp;
+        }
+    } else if (strcmp(interp, "/usr/bin/env") == 0 || strcmp(interp, "/bin/env") == 0) {
+        if (g_real_prefix[0]) {
+            snprintf(temp, sizeof(temp), "%s/bin/env", g_real_prefix);
+            real_interp = temp;
+        }
+    }
+
+    strncpy(interp_buf, real_interp, interp_buf_size - 1);
+    interp_buf[interp_buf_size - 1] = '\0';
+    if (shebang_arg_out) *shebang_arg_out = shebang_arg ? strdup(shebang_arg) : NULL;
+    return 1;
+}
 
 int execve(const char* filename, char* const argv[], char* const envp[]) {
     char buf[1024];
@@ -497,62 +680,27 @@ int execve(const char* filename, char* const argv[], char* const envp[]) {
     static int (*real_fn)(const char*, char* const[], char* const[]) = NULL;
     if (!real_fn) real_fn = (int (*)(const char*, char* const[], char* const[])) dlsym(RTLD_NEXT, "execve");
 
-    // Check if rpath is a script with a shebang
-    int fd = open(rpath, O_RDONLY | O_CLOEXEC);
-    if (fd >= 0) {
-        char header[256];
-        ssize_t n = read(fd, header, sizeof(header) - 1);
-        close(fd);
-        if (n > 2 && header[0] == '#' && header[1] == '!') {
-            header[n] = '\0';
-            char* newline = strchr(header, '\n');
-            if (newline) *newline = '\0';
-            char* interp = header + 2;
-            while (*interp == ' ' || *interp == '\t') interp++;
-            char* shebang_arg = NULL;
-            char* space = strpbrk(interp, " \t");
-            if (space) {
-                *space = '\0';
-                shebang_arg = space + 1;
-                while (*shebang_arg == ' ' || *shebang_arg == '\t') shebang_arg++;
-                if (!*shebang_arg) shebang_arg = NULL;
+    char interp_buf[512] = {0};
+    char* shebang_arg = NULL;
+    if (check_script_shebang(rpath, interp_buf, sizeof(interp_buf), &shebang_arg)) {
+        int argc = 0;
+        while (argv && argv[argc]) argc++;
+        int extra = shebang_arg ? 3 : 2;
+        char** new_argv = (char**) malloc(sizeof(char*) * (argc + extra));
+        if (new_argv) {
+            int idx = 0;
+            new_argv[idx++] = interp_buf;
+            if (shebang_arg) new_argv[idx++] = shebang_arg;
+            new_argv[idx++] = (char*) rpath;
+            for (int i = 1; i <= argc; i++) {
+                new_argv[idx++] = argv[i];
             }
-
-            char interp_buf[512];
-            const char* real_interp = interp;
-            if (strstr(interp, "com.termux") || strstr(interp, "com.bomax") || strstr(interp, "com.example.termuxlite")) {
-                real_interp = redirect_path(interp, interp_buf, sizeof(interp_buf));
-            } else if (strcmp(interp, "/bin/sh") == 0 || strcmp(interp, "/usr/bin/sh") == 0) {
-                init_redirect_paths();
-                if (g_real_files[0]) {
-                    snprintf(interp_buf, sizeof(interp_buf), "%s/usr/bin/sh", g_real_files);
-                    real_interp = interp_buf;
-                }
-            } else if (strcmp(interp, "/usr/bin/env") == 0 || strcmp(interp, "/bin/env") == 0) {
-                init_redirect_paths();
-                if (g_real_files[0]) {
-                    snprintf(interp_buf, sizeof(interp_buf), "%s/usr/bin/env", g_real_files);
-                    real_interp = interp_buf;
-                }
-            }
-
-            if (real_interp != interp) {
-                int argc = 0;
-                while (argv && argv[argc]) argc++;
-                int extra = shebang_arg ? 3 : 2;
-                char** new_argv = (char**) malloc(sizeof(char*) * (argc + extra));
-                if (new_argv) {
-                    int idx = 0;
-                    new_argv[idx++] = (char*) real_interp;
-                    if (shebang_arg) new_argv[idx++] = (char*) shebang_arg;
-                    new_argv[idx++] = (char*) rpath;
-                    for (int i = 1; i <= argc; i++) {
-                        new_argv[idx++] = argv[i];
-                    }
-                    return real_fn(real_interp, new_argv, envp);
-                }
-            }
+            int res = real_fn ? real_fn(interp_buf, new_argv, envp) : -1;
+            free(shebang_arg);
+            free(new_argv);
+            return res;
         }
+        if (shebang_arg) free(shebang_arg);
     }
 
     return real_fn ? real_fn(rpath, argv, envp) : -1;
@@ -568,4 +716,77 @@ int execvp(const char* file, char* const argv[]) {
     char buf[1024];
     const char* rpath = redirect_path(file, buf, sizeof(buf));
     return execve(rpath, argv, environ);
+}
+
+int execvpe(const char* file, char* const argv[], char* const envp[]) {
+    char buf[1024];
+    const char* rpath = redirect_path(file, buf, sizeof(buf));
+    return execve(rpath, argv, envp);
+}
+
+typedef int (*posix_spawn_fn)(pid_t*, const char*, const posix_spawn_file_actions_t*,
+                              const posix_spawnattr_t*, char* const[], char* const[]);
+
+int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* file_actions,
+                const posix_spawnattr_t* attr, char* const argv[], char* const envp[]) {
+    char buf[1024];
+    const char* rpath = redirect_path(path, buf, sizeof(buf));
+    static posix_spawn_fn real_fn = NULL;
+    if (!real_fn) real_fn = (posix_spawn_fn) dlsym(RTLD_NEXT, "posix_spawn");
+
+    char interp_buf[512] = {0};
+    char* shebang_arg = NULL;
+    if (check_script_shebang(rpath, interp_buf, sizeof(interp_buf), &shebang_arg)) {
+        int argc = 0;
+        while (argv && argv[argc]) argc++;
+        int extra = shebang_arg ? 3 : 2;
+        char** new_argv = (char**) malloc(sizeof(char*) * (argc + extra));
+        if (new_argv) {
+            int idx = 0;
+            new_argv[idx++] = interp_buf;
+            if (shebang_arg) new_argv[idx++] = shebang_arg;
+            new_argv[idx++] = (char*) rpath;
+            for (int i = 1; i <= argc; i++) {
+                new_argv[idx++] = argv[i];
+            }
+            int res;
+            if (real_fn) {
+                res = real_fn(pid, interp_buf, file_actions, attr, new_argv, envp);
+            } else {
+                pid_t c = fork();
+                if (c == 0) {
+                    execve(interp_buf, new_argv, envp);
+                    _exit(127);
+                } else if (c > 0) {
+                    if (pid) *pid = c;
+                    res = 0;
+                } else {
+                    res = -1;
+                }
+            }
+            free(shebang_arg);
+            free(new_argv);
+            return res;
+        }
+        if (shebang_arg) free(shebang_arg);
+    }
+
+    if (real_fn) return real_fn(pid, rpath, file_actions, attr, argv, envp);
+
+    pid_t c = fork();
+    if (c == 0) {
+        execve(rpath, argv, envp);
+        _exit(127);
+    } else if (c > 0) {
+        if (pid) *pid = c;
+        return 0;
+    }
+    return -1;
+}
+
+int posix_spawnp(pid_t* pid, const char* file, const posix_spawn_file_actions_t* file_actions,
+                 const posix_spawnattr_t* attr, char* const argv[], char* const envp[]) {
+    char buf[1024];
+    const char* rpath = redirect_path(file, buf, sizeof(buf));
+    return posix_spawn(pid, rpath, file_actions, attr, argv, envp);
 }
