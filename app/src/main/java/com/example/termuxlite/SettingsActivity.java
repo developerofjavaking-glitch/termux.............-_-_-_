@@ -8,6 +8,8 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.View;
@@ -118,19 +120,21 @@ public class SettingsActivity extends AppCompatActivity {
                 new ActivityResultContracts.OpenDocument(),
                 uri -> {
                     if (uri != null) {
-                        try {
-                            String fileName = "imported_file";
-                            android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null);
+                        String fileName = "imported_file";
+                        try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
                             if (cursor != null && cursor.moveToFirst()) {
                                 int nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
-                                if (nameIndex >= 0) fileName = cursor.getString(nameIndex);
-                                cursor.close();
+                                if (nameIndex >= 0 && cursor.getString(nameIndex) != null) {
+                                    fileName = cursor.getString(nameIndex);
+                                }
                             }
-                            StorageHelper.copyUriToHome(this, uri, fileName);
-                            Toast.makeText(this, getString(R.string.import_success) + " (" + fileName + ")", Toast.LENGTH_LONG).show();
-                        } catch (Exception e) {
-                            Toast.makeText(this, "Import failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                        }
+                        } catch (Exception ignored) {}
+
+                        final String finalName = fileName;
+                        runInBackground(() -> {
+                            StorageHelper.copyUriToHome(getApplicationContext(), uri, finalName);
+                            return getString(R.string.import_success) + " (" + finalName + ")";
+                        }, "Import failed: ");
                     }
                 }
         );
@@ -139,14 +143,13 @@ public class SettingsActivity extends AppCompatActivity {
                 new ActivityResultContracts.CreateDocument("application/zip"),
                 uri -> {
                     if (uri != null) {
-                        try (OutputStream out = getContentResolver().openOutputStream(uri)) {
-                            if (out != null) {
-                                StorageHelper.backupHomeToZip(this, out);
-                                Toast.makeText(this, R.string.backup_success, Toast.LENGTH_SHORT).show();
+                        runInBackground(() -> {
+                            try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                                if (out == null) throw new java.io.IOException("Cannot open output file");
+                                StorageHelper.backupHomeToZip(getApplicationContext(), out);
                             }
-                        } catch (Exception e) {
-                            Toast.makeText(this, "Backup failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                        }
+                            return getString(R.string.backup_success);
+                        }, "Backup failed: ");
                     }
                 }
         );
@@ -155,14 +158,13 @@ public class SettingsActivity extends AppCompatActivity {
                 new ActivityResultContracts.OpenDocument(),
                 uri -> {
                     if (uri != null) {
-                        try (InputStream in = getContentResolver().openInputStream(uri)) {
-                            if (in != null) {
-                                StorageHelper.restoreHomeFromZip(this, in);
-                                Toast.makeText(this, R.string.restore_success, Toast.LENGTH_SHORT).show();
+                        runInBackground(() -> {
+                            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                                if (in == null) throw new java.io.IOException("Cannot open backup file");
+                                StorageHelper.restoreHomeFromZip(getApplicationContext(), in);
                             }
-                        } catch (Exception e) {
-                            Toast.makeText(this, "Restore failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                        }
+                            return getString(R.string.restore_success);
+                        }, "Restore failed: ");
                     }
                 }
         );
@@ -312,8 +314,11 @@ public class SettingsActivity extends AppCompatActivity {
                     case 3: mirrorUrl = BootstrapInstaller.MIRROR_BFSU; break;
                     default: mirrorUrl = BootstrapInstaller.MIRROR_CLOUDFLARE; break;
                 }
-                prefs.edit().putString("package_mirror", mirrorUrl).apply();
-                BootstrapInstaller.updateMirror(SettingsActivity.this, mirrorUrl);
+                String current = prefs.getString("package_mirror", BootstrapInstaller.MIRROR_CLOUDFLARE);
+                if (!mirrorUrl.equals(current)) {
+                    prefs.edit().putString("package_mirror", mirrorUrl).apply();
+                    BootstrapInstaller.updateMirror(SettingsActivity.this, mirrorUrl);
+                }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
@@ -337,6 +342,28 @@ public class SettingsActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         prefs.edit().putString("boot_command", etBootCommand.getText().toString().trim()).apply();
+    }
+
+    /** A task that may throw and returns the message to show when it succeeded. */
+    private interface BackgroundTask {
+        String run() throws Exception;
+    }
+
+    /** Runs file work off the UI thread (large home folders would otherwise freeze the screen). */
+    private void runInBackground(BackgroundTask task, String errorPrefix) {
+        final Context appContext = getApplicationContext();
+        final Handler main = new Handler(Looper.getMainLooper());
+        Toast.makeText(appContext, "Working...", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String message;
+            try {
+                message = task.run();
+            } catch (Exception e) {
+                message = errorPrefix + e.getMessage();
+            }
+            final String toastText = message;
+            main.post(() -> Toast.makeText(appContext, toastText, Toast.LENGTH_LONG).show());
+        }, "boomaux-file-task").start();
     }
 
     private void requestBatteryOptimizationExemption() {
@@ -382,7 +409,6 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void showResetEnvDialog() {
-        View dialogView = getLayoutInflater().inflate(android.R.layout.simple_list_item_multiple_choice, null);
         final CheckBox checkBox = new CheckBox(this);
         checkBox.setText(R.string.reset_env_wipe_home_checkbox);
         checkBox.setPadding(30, 20, 20, 20);
@@ -402,4 +428,4 @@ public class SettingsActivity extends AppCompatActivity {
                 .setNegativeButton(R.string.action_cancel, null)
                 .show();
     }
-}
+    }
