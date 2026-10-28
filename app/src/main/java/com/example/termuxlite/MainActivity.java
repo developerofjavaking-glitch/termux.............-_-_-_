@@ -75,6 +75,8 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     private boolean altActive = false;
     private float fontDp = 14f;
 
+    private boolean pendingNewSession = false;
+
     private SharedPreferences prefs;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ActivityResultLauncher<Intent> settingsLauncher;
@@ -90,6 +92,9 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
                 @Override
                 public void onSessionListChanged() {
                     runOnUiThread(() -> {
+                        if (termuxService != null && termuxService.isReplacingSessions()) {
+                            return; // sessions are being swapped, do not close the activity
+                        }
                         if (termuxService == null || termuxService.getSessions().isEmpty()) {
                             finish();
                         } else {
@@ -114,11 +119,13 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
             updateWakeLockUi();
             applySavedPreferences();
 
-            if (termuxService.getSessions().isEmpty()) {
+            boolean hadSessions = !termuxService.getSessions().isEmpty();
+            if (!hadSessions || pendingNewSession) {
                 newSession();
             } else {
                 attachCurrentSession();
             }
+            pendingNewSession = false;
         }
 
         @Override
@@ -135,6 +142,8 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         setContentView(R.layout.activity_main);
 
         prefs = getSharedPreferences("boomaux_prefs", MODE_PRIVATE);
+        pendingNewSession = getIntent() != null
+                && TermuxService.ACTION_NEW_SESSION.equals(getIntent().getAction());
 
         terminalView = findViewById(R.id.terminalView);
         sessionTitle = findViewById(R.id.sessionTitle);
@@ -191,8 +200,13 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
         if (intent != null && TermuxService.ACTION_NEW_SESSION.equals(intent.getAction())) {
-            newSession();
+            if (termuxService != null) {
+                newSession();
+            } else {
+                pendingNewSession = true;
+            }
         }
     }
 
@@ -240,7 +254,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     private void checkAndInstallBootstrap() {
         if (BootstrapInstaller.isInstalled(this)) {
             bootstrapStatusLayout.setVisibility(View.GONE);
-            BootstrapInstaller.setupSystemDirsAndConfigs(this, new File(getFilesDir(), "usr"), new File(getFilesDir(), "home"));
+            BootstrapInstaller.ensureDirectories(this);
             return;
         }
 
@@ -275,14 +289,8 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
                 runOnUiThread(() -> {
                     bootstrapStatusLayout.setVisibility(View.GONE);
                     Toast.makeText(MainActivity.this, R.string.bootstrap_ready, Toast.LENGTH_SHORT).show();
-                    if (termuxService != null) {
-                        List<TerminalSession> oldSessions = new ArrayList<>(termuxService.getSessions());
-                        for (TerminalSession s : oldSessions) {
-                            termuxService.removeSession(s);
-                        }
-                        newSession();
-                    }
-                    promptFirstRunDialog();
+                    replaceAllSessions();
+                    if (!isFinishing()) promptFirstRunDialog();
                 });
             }
 
@@ -312,9 +320,29 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
                 .show();
     }
 
+    /**
+     * Replaces every running session with one fresh session. The service keeps running and the
+     * activity stays open while this happens (see TermuxService.setReplacingSessions).
+     */
+    private void replaceAllSessions() {
+        if (termuxService == null) return;
+        termuxService.setReplacingSessions(true);
+        try {
+            for (TerminalSession s : termuxService.getSessions()) {
+                termuxService.removeSession(s);
+            }
+            newSession();
+        } finally {
+            termuxService.setReplacingSessions(false);
+        }
+    }
+
     private void performResetEnvironment(boolean wipeHome) {
         if (termuxService != null) {
-            for (TerminalSession s : new ArrayList<>(termuxService.getSessions())) {
+            // Stop all shells (they run from the environment that is about to be replaced) but keep
+            // the service and this activity alive until the reset has finished.
+            termuxService.setReplacingSessions(true);
+            for (TerminalSession s : termuxService.getSessions()) {
                 termuxService.removeSession(s);
             }
         }
@@ -347,6 +375,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
                 runOnUiThread(() -> {
                     bootstrapStatusLayout.setVisibility(View.GONE);
                     Toast.makeText(MainActivity.this, R.string.bootstrap_ready, Toast.LENGTH_SHORT).show();
+                    if (termuxService != null) termuxService.setReplacingSessions(false);
                     newSession();
                 });
             }
@@ -357,6 +386,11 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
                     bootstrapProgressBar.setIndeterminate(false);
                     bootstrapStatusText.setText(getString(R.string.bootstrap_error, error));
                     btnRetryBootstrap.setVisibility(View.VISIBLE);
+                    if (termuxService != null) {
+                        termuxService.setReplacingSessions(false);
+                        // Give the user a shell again (the old environment is kept on failure).
+                        if (termuxService.getSessions().isEmpty()) newSession();
+                    }
                 });
             }
         });
@@ -415,15 +449,10 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         env.add("PREFIX=" + prefix);
         env.add("LANG=en_US.UTF-8");
         env.add("PATH=" + binDir + ":" + appletsDir + ":/system/bin");
-        env.add("LD_LIBRARY_PATH=" + prefix + "/lib");
         env.add("ANDROID_ROOT=/system");
         env.add("ANDROID_DATA=/data");
         env.add("EXTERNAL_STORAGE=/sdcard");
         env.add("TERMUX_APP_PACKAGE_MANAGER=apt");
-        File aptConf = new File(prefix, "etc/apt/apt.conf");
-        if (aptConf.exists()) {
-            env.add("APT_CONFIG=" + aptConf.getAbsolutePath());
-        }
         env.add("SSL_CERT_FILE=" + prefix + "/etc/tls/cert.pem");
         env.add("SSL_CERT_DIR=" + prefix + "/etc/ssl/certs");
         env.add("CURL_CA_BUNDLE=" + prefix + "/etc/tls/cert.pem");
@@ -532,38 +561,52 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     }
 
     private void showFolderShortcuts() {
-        File home = new File(getFilesDir(), "home");
-        final List<String> paths = new ArrayList<>();
-        paths.add("~ (Home)");
-        paths.add("~/storage/shared (Internal Storage)");
-        paths.add("~/storage/downloads (Downloads)");
-        paths.add("~/storage/dcim (DCIM)");
+        // labels[i] is what the user sees, targets[i] is the directory that is cd'ed into.
+        final List<String> labels = new ArrayList<>();
+        final List<String> targets = new ArrayList<>();
+        labels.add("~ (Home)");                                 targets.add("~");
+        labels.add("~/storage/shared (Internal Storage)");      targets.add("~/storage/shared");
+        labels.add("~/storage/downloads (Downloads)");          targets.add("~/storage/downloads");
+        labels.add("~/storage/dcim (DCIM)");                    targets.add("~/storage/dcim");
 
-        // Read saved custom folders
-        Set<String> custom = prefs.getStringSet("custom_folders", new HashSet<>());
+        Set<String> custom = prefs.getStringSet("custom_folders", null);
         if (custom != null) {
-            paths.addAll(custom);
+            for (String path : new java.util.TreeSet<>(custom)) {
+                labels.add(path);
+                targets.add(path);
+            }
         }
 
-        final String[] items = new String[paths.size() + 1];
-        for (int i = 0; i < paths.size(); i++) items[i] = paths.get(i);
-        items[paths.size()] = "+ " + getString(R.string.shortcut_add);
+        final int addIndex = labels.size();
+        final String[] items = new String[addIndex + 1];
+        for (int i = 0; i < addIndex; i++) items[i] = labels.get(i);
+        items[addIndex] = "+ " + getString(R.string.shortcut_add);
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.menu_folder_shortcuts)
                 .setItems(items, (dialog, which) -> {
-                    if (which == paths.size()) {
+                    if (which == addIndex) {
                         promptAddFolderShortcut();
                     } else {
-                        String chosen = paths.get(which);
-                        String targetDir = chosen.split(" ")[0]; // takes ~/storage/shared etc.
                         TerminalSession s = terminalView.getCurrentSession();
                         if (s != null) {
-                            s.write("cd " + targetDir + "\n");
+                            s.write("cd " + quotePathForShell(targets.get(which)) + "\n");
                         }
                     }
                 })
                 .show();
+    }
+
+    /** Quotes a path for the shell while keeping a leading "~" expandable. Handles spaces and quotes. */
+    private static String quotePathForShell(String path) {
+        if ("~".equals(path)) return "~";
+        String prefix = "";
+        String rest = path;
+        if (path.startsWith("~/")) {
+            prefix = "~/";
+            rest = path.substring(2);
+        }
+        return prefix + "'" + rest.replace("'", "'\\''") + "'";
     }
 
     private void promptAddFolderShortcut() {
@@ -726,9 +769,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
 
     @Override
     public void onSessionFinished(@NonNull TerminalSession finishedSession) {
-        if (termuxService != null) {
-            termuxService.removeSession(finishedSession);
-        }
+        // TermuxService already removed the session and notifies us through its session listener.
     }
 
     @Override
@@ -822,6 +863,7 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         }
 
         final String targetUrl = candidateUrl;
+        final int urlOffset = targetUrl != null ? 1 : 0;
         List<String> options = new ArrayList<>();
         if (targetUrl != null) {
             options.add(getString(R.string.menu_open_url, targetUrl));
@@ -837,27 +879,36 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         new AlertDialog.Builder(this)
                 .setTitle(R.string.terminal_menu_title)
                 .setItems(items, (dialog, which) -> {
-                    String selected = items[which];
-                    if (targetUrl != null && selected.startsWith(getString(R.string.menu_open_url, "").split("%")[0])) {
+                    if (targetUrl != null && which == 0) {
                         openUrlInBrowser(targetUrl);
-                    } else if (selected.equals(getString(R.string.menu_copy_all))) {
-                        if (session != null && session.getEmulator() != null) {
-                            String text = session.getEmulator().getScreen().getTranscriptText();
-                            onCopyTextToClipboard(session, text);
-                        }
-                    } else if (selected.equals(getString(R.string.menu_paste))) {
-                        onPasteTextFromClipboard(session);
-                    } else if (selected.equals(getString(R.string.menu_rename_session))) {
-                        promptRenameSession();
-                    } else if (selected.equals(getString(R.string.menu_reset_terminal))) {
-                        if (session != null) {
-                            session.reset();
-                            terminalView.invalidate();
-                        }
-                    } else if (selected.equals(getString(R.string.menu_kill_process))) {
-                        if (session != null) {
-                            session.write(new byte[]{3}, 0, 1); // Send Ctrl+C (ETX)
-                        }
+                        return;
+                    }
+                    switch (which - urlOffset) {
+                        case 0: // copy all
+                            if (session != null && session.getEmulator() != null) {
+                                String text = session.getEmulator().getScreen().getTranscriptText();
+                                onCopyTextToClipboard(session, text);
+                            }
+                            break;
+                        case 1: // paste
+                            onPasteTextFromClipboard(session);
+                            break;
+                        case 2: // rename session
+                            promptRenameSession();
+                            break;
+                        case 3: // reset terminal
+                            if (session != null) {
+                                session.reset();
+                                terminalView.invalidate();
+                            }
+                            break;
+                        case 4: // kill process (Ctrl+C)
+                            if (session != null) {
+                                session.write(new byte[]{3}, 0, 1);
+                            }
+                            break;
+                        default:
+                            break;
                     }
                 })
                 .show();
@@ -865,13 +916,26 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
         return true;
     }
 
+    /**
+     * Only treats text that really looks like a link as a URL (http://, https:// or www.).
+     * Patterns.WEB_URL alone matches file names such as main.py, readme.md or run.sh because
+     * py/md/sh are country TLDs, which made tapping a file name open the browser.
+     */
     private static String extractUrl(String text) {
-        if (text == null || text.trim().isEmpty()) return null;
+        if (text == null) return null;
         text = text.trim();
-        Matcher matcher = Patterns.WEB_URL.matcher(text);
-        if (matcher.find()) {
+        if (text.isEmpty()) return null;
+        String lower = text.toLowerCase(java.util.Locale.ROOT);
+        int start = lower.indexOf("http://");
+        if (start < 0) start = lower.indexOf("https://");
+        if (start < 0) start = lower.indexOf("www.");
+        if (start < 0) return null;
+
+        Matcher matcher = Patterns.WEB_URL.matcher(text.substring(start));
+        if (matcher.find() && matcher.start() == 0) {
             String match = matcher.group();
-            if (!match.startsWith("http://") && !match.startsWith("https://")) {
+            String matchLower = match.toLowerCase(java.util.Locale.ROOT);
+            if (!matchLower.startsWith("http://") && !matchLower.startsWith("https://")) {
                 match = "https://" + match;
             }
             return match;
@@ -924,4 +988,4 @@ public class MainActivity extends AppCompatActivity implements TerminalSessionCl
     @Override public void logVerbose(String tag, String message) { Log.v(tag, message); }
     @Override public void logStackTraceWithMessage(String tag, String message, Exception e) { Log.e(tag, message, e); }
     @Override public void logStackTrace(String tag, Exception e) { Log.e(tag, "error", e); }
-}
+    }
