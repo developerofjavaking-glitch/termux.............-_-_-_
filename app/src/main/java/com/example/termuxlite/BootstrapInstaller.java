@@ -4,12 +4,12 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.system.Os;
+import android.system.OsConstants;
 import android.util.Log;
 import android.util.Pair;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -19,29 +19,44 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
-
 /**
- * Installs and configures the official Termux Linux bootstrap environment for BoomAux.
- * Supports download progress reporting (% and MB), mirror selection, and clean resets.
+ * Installs and configures the official Termux bootstrap for BoomAux.
+ *
+ * IMPORTANT: the official bootstrap and package repository are built for the package name
+ * "com.termux" (prefix /data/data/com.termux/files/usr), so the app's applicationId MUST be
+ * "com.termux". No path patching is done here on purpose.
+ *
+ * Security: the bootstrap is downloaded only from the official GitHub release over normal,
+ * verified TLS and is checked against a pinned SHA-256 before anything is extracted.
+ * To update the bootstrap, change BOOTSTRAP_TAG and the SHA-256 values together.
  */
 public class BootstrapInstaller {
 
     private static final String TAG = "BoomAuxBootstrap";
 
+    public static final String REQUIRED_PACKAGE_NAME = "com.termux";
+
+    private static final String BOOTSTRAP_TAG = "bootstrap-2026.10.25-r1%2Bapt.android-7";
+    private static final String BOOTSTRAP_BASE_URL =
+            "https://github.com/termux/termux-packages/releases/download/" + BOOTSTRAP_TAG + "/bootstrap-";
+
+    private static final long MIN_FREE_BYTES = 400L * 1024 * 1024;
+
     public static final String MIRROR_CLOUDFLARE = "https://packages-cf.termux.dev/apt/termux-main";
     public static final String MIRROR_OFFICIAL = "https://packages.termux.dev/apt/termux-main";
     public static final String MIRROR_TSINGHUA = "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main";
     public static final String MIRROR_BFSU = "https://mirrors.bfsu.edu.cn/termux/apt/termux-main";
+
+    private static final AtomicBoolean sInstalling = new AtomicBoolean(false);
+    private static volatile Callback sCallback;
 
     public interface Callback {
         void onProgress(long current, long total, String message);
@@ -50,11 +65,17 @@ public class BootstrapInstaller {
         void onError(String error);
     }
 
+    // ---------------------------------------------------------------- state
+
     public static boolean isInstalled(Context context) {
         File usr = new File(context.getFilesDir(), "usr");
         return new File(usr, "bin/pkg").exists()
                 && new File(usr, "bin/bash").exists()
                 && new File(usr, "bin/apt").exists();
+    }
+
+    public static boolean isInstalling() {
+        return sInstalling.get();
     }
 
     public static String getArch() {
@@ -67,41 +88,113 @@ public class BootstrapInstaller {
         return "aarch64";
     }
 
-    public static void installAsync(final Context context, final Callback callback) {
-        new Thread(() -> {
-            try {
-                install(context, callback);
-            } catch (Exception e) {
-                Log.e(TAG, "Bootstrap installation failed", e);
-                callback.onError(e.getMessage() != null ? e.getMessage() : e.toString());
-            }
-        }).start();
+    private static String expectedSha256(String arch) {
+        switch (arch) {
+            case "aarch64": return "964e0473a9fa881600927c0151b99896089fb595b81afdcd74b1a6743b8b5889";
+            case "arm":     return "137d3a4a887194811dcc36e1c73c6f476105279648565b87491d67d0ab6abe3d";
+            case "x86_64":  return "cb0ffc9f35dbb13971aad9683c393e6652bc95a4ba0eac905ca35065687f7de4";
+            case "i686":    return "b2e6aeafd937df1890dff86eff4938894d19db2cd3f444e070cd2ac8e93adcd2";
+            default:        return null;
+        }
     }
 
-    public static void resetEnvironment(Context context, boolean wipeHome, Callback callback) {
+    // ---------------------------------------------------------------- entry points
+
+    /**
+     * Starts the installation in the background. Only one installation can run at a time; if one is
+     * already running, the new callback simply replaces the old one so the UI keeps updating.
+     */
+    public static void installAsync(final Context context, final Callback callback) {
+        sCallback = callback;
+        if (!sInstalling.compareAndSet(false, true)) {
+            Log.i(TAG, "Installation already running, attached new callback.");
+            return;
+        }
+        final Context app = context.getApplicationContext();
         new Thread(() -> {
             try {
-                callback.onStatus("Resetting Linux environment...");
-                File filesDir = context.getFilesDir();
-                deleteRecursive(new File(filesDir, "usr"));
-                deleteRecursive(new File(filesDir, "usr-staging"));
+                install(app, proxyCallback());
+            } catch (Exception e) {
+                Log.e(TAG, "Bootstrap installation failed", e);
+                proxyCallback().onError(e.getMessage() != null ? e.getMessage() : e.toString());
+            } finally {
+                sInstalling.set(false);
+                sCallback = null;
+            }
+        }, "bootstrap-install").start();
+    }
+
+    /**
+     * Re-installs the environment. The existing usr directory is only replaced after the new
+     * bootstrap was downloaded, verified and extracted, so a failed download keeps the old one.
+     */
+    public static void resetEnvironment(Context context, boolean wipeHome, Callback callback) {
+        sCallback = callback;
+        if (!sInstalling.compareAndSet(false, true)) {
+            Log.i(TAG, "Installation already running, attached new callback.");
+            return;
+        }
+        final Context app = context.getApplicationContext();
+        new Thread(() -> {
+            try {
+                proxyCallback().onStatus("Resetting Linux environment...");
+                File filesDir = app.getFilesDir();
                 if (wipeHome) {
                     deleteRecursive(new File(filesDir, "home"));
                     new File(filesDir, "home").mkdirs();
                 }
-                install(context, callback);
+                install(app, proxyCallback());
             } catch (Exception e) {
                 Log.e(TAG, "Environment reset failed", e);
-                callback.onError(e.getMessage() != null ? e.getMessage() : e.toString());
+                proxyCallback().onError(e.getMessage() != null ? e.getMessage() : e.toString());
+            } finally {
+                sInstalling.set(false);
+                sCallback = null;
             }
-        }).start();
+        }, "bootstrap-reset").start();
     }
 
-    public static void install(Context context, Callback callback) throws Exception {
-        String arch = getArch();
-        Log.i(TAG, "Starting BoomAux bootstrap installation for architecture: " + arch);
+    private static Callback proxyCallback() {
+        return new Callback() {
+            @Override public void onProgress(long current, long total, String message) {
+                Callback c = sCallback;
+                if (c != null) c.onProgress(current, total, message);
+            }
+            @Override public void onStatus(String status) {
+                Callback c = sCallback;
+                if (c != null) c.onStatus(status);
+            }
+            @Override public void onSuccess() {
+                Callback c = sCallback;
+                if (c != null) c.onSuccess();
+            }
+            @Override public void onError(String error) {
+                Callback c = sCallback;
+                if (c != null) c.onError(error);
+            }
+        };
+    }
+
+    // ---------------------------------------------------------------- install
+
+    private static void install(Context context, Callback callback) throws Exception {
+        if (!REQUIRED_PACKAGE_NAME.equals(context.getPackageName())) {
+            throw new IOException("applicationId must be \"" + REQUIRED_PACKAGE_NAME + "\" (current: "
+                    + context.getPackageName() + "). The official Termux packages only work with that name.");
+        }
+
+        final String arch = getArch();
+        final String expectedSha = expectedSha256(arch);
+        if (expectedSha == null) {
+            throw new IOException("Unsupported CPU architecture: " + arch);
+        }
+        Log.i(TAG, "Starting bootstrap installation for architecture: " + arch);
 
         File filesDir = context.getFilesDir();
+        if (filesDir.getUsableSpace() < MIN_FREE_BYTES) {
+            throw new IOException("Not enough free storage. At least 400 MB is required.");
+        }
+
         File stagingDir = new File(filesDir, "usr-staging");
         File prefixDir = new File(filesDir, "usr");
         File homeDir = new File(filesDir, "home");
@@ -110,66 +203,76 @@ public class BootstrapInstaller {
         File tempZip = new File(context.getCacheDir(), "bootstrap-" + arch + ".zip");
         if (tempZip.exists()) tempZip.delete();
 
-        boolean downloaded = false;
-        Exception lastException = null;
+        try {
+            boolean haveArchive = tryLocalArchive(context, arch, expectedSha, tempZip, callback);
 
-        // 1. Check local candidates
-        File[] localCandidates = new File[]{
-                new File(context.getExternalFilesDir(null), "bootstrap-" + arch + ".zip"),
+            if (!haveArchive) {
+                callback.onStatus("Connecting to the official Termux release...");
+                downloadVerified(BOOTSTRAP_BASE_URL + arch + ".zip", tempZip, expectedSha, callback);
+            }
+
+            extractArchive(tempZip, stagingDir, callback);
+
+            callback.onStatus("Finalizing setup...");
+            if (prefixDir.exists()) {
+                deleteRecursive(prefixDir);
+            }
+            if (!stagingDir.renameTo(prefixDir)) {
+                throw new IOException("Failed to move " + stagingDir + " to " + prefixDir);
+            }
+        } finally {
+            if (tempZip.exists()) tempZip.delete();
+            if (stagingDir.exists()) deleteRecursive(stagingDir);
+        }
+
+        ensureDirectories(prefixDir, homeDir);
+        SharedPreferences prefs = context.getSharedPreferences("boomaux_prefs", Context.MODE_PRIVATE);
+        applyMirrorConfig(prefixDir, prefs.getString("package_mirror", MIRROR_CLOUDFLARE));
+
+        Log.i(TAG, "Bootstrap successfully installed!");
+        callback.onSuccess();
+    }
+
+    /** Uses a locally placed archive only if its SHA-256 matches the pinned value. */
+    private static boolean tryLocalArchive(Context context, String arch, String expectedSha,
+                                           File tempZip, Callback callback) {
+        File ext = context.getExternalFilesDir(null);
+        File[] candidates = new File[]{
+                ext != null ? new File(ext, "bootstrap-" + arch + ".zip") : null,
                 new File("/sdcard/Download/bootstrap-" + arch + ".zip"),
                 new File("/sdcard/bootstrap-" + arch + ".zip")
         };
-        for (File candidate : localCandidates) {
-            if (candidate.exists() && candidate.length() > 5 * 1024 * 1024) {
-                try {
-                    callback.onStatus("Found local bootstrap: " + candidate.getName());
-                    copyFile(candidate, tempZip);
-                    downloaded = true;
-                    Log.i(TAG, "Using local bootstrap archive: " + candidate.getAbsolutePath());
-                    break;
-                } catch (Exception ignored) {}
-            }
-        }
-
-        // 2. Download from high-speed CDN mirrors
-        if (!downloaded) {
-            String[] downloadUrls = new String[]{
-                    "https://gh-proxy.com/https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip",
-                    "https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip",
-                    "https://github.com/termux/termux-packages/releases/latest/download/bootstrap-" + arch + ".zip",
-                    "https://ghproxy.net/https://github.com/termux/termux-packages/releases/download/bootstrap-2026.10.25-r1%2Bapt.android-7/bootstrap-" + arch + ".zip"
-            };
-
-            for (String urlStr : downloadUrls) {
-                try {
-                    callback.onStatus("Connecting to BoomAux package mirrors...");
-                    downloadWithProgress(urlStr, tempZip, callback);
-                    downloaded = true;
-                    break;
-                } catch (Exception e) {
-                    Log.w(TAG, "Download attempt failed from: " + urlStr, e);
-                    lastException = e;
-                    if (tempZip.exists()) tempZip.delete();
+        for (File candidate : candidates) {
+            if (candidate == null || !candidate.isFile() || candidate.length() < 5L * 1024 * 1024) continue;
+            try {
+                callback.onStatus("Checking local bootstrap: " + candidate.getName());
+                String sha = sha256Of(candidate);
+                if (!expectedSha.equalsIgnoreCase(sha)) {
+                    Log.w(TAG, "Ignoring local archive with unexpected checksum: " + candidate);
+                    continue;
                 }
+                copyFile(candidate, tempZip);
+                Log.i(TAG, "Using verified local bootstrap archive: " + candidate);
+                return true;
+            } catch (Exception e) {
+                Log.w(TAG, "Could not use local archive " + candidate, e);
             }
         }
+        return false;
+    }
 
-        if (!downloaded || !tempZip.exists() || tempZip.length() == 0) {
-            throw new IOException("Failed downloading bootstrap: " +
-                    (lastException != null ? lastException.getMessage() : "Network error"));
-        }
-
-        // 3. Extract to staging directory
+    private static void extractArchive(File zipFile, File stagingDir, Callback callback) throws IOException {
         callback.onStatus("Extracting Linux base system...");
         deleteRecursive(stagingDir);
         if (!stagingDir.mkdirs()) {
             throw new IOException("Failed to create staging directory: " + stagingDir);
         }
+        final String stagingCanonical = stagingDir.getCanonicalPath();
 
         List<Pair<String, String>> symlinks = new ArrayList<>();
         byte[] buffer = new byte[16384];
 
-        try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(tempZip)))) {
+        try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(zipFile)))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 String name = entry.getName();
@@ -185,7 +288,7 @@ public class BootstrapInstaller {
                         }
                     }
                 } else {
-                    File outFile = new File(stagingDir, name);
+                    File outFile = safeChild(stagingCanonical, name);
                     if (entry.isDirectory()) {
                         outFile.mkdirs();
                     } else {
@@ -200,7 +303,7 @@ public class BootstrapInstaller {
                         if (name.startsWith("bin/") || name.startsWith("libexec/") ||
                                 name.startsWith("lib/apt/apt-helper") || name.startsWith("lib/apt/methods/")) {
                             try {
-                                Os.chmod(outFile.getAbsolutePath(), 0755);
+                                Os.chmod(outFile.getAbsolutePath(), 0700);
                             } catch (Exception ignored) {}
                         }
                     }
@@ -209,52 +312,40 @@ public class BootstrapInstaller {
             }
         }
 
-        // 4. Create symlinks
         callback.onStatus("Configuring symbolic links...");
         for (Pair<String, String> link : symlinks) {
             String target = link.first;
             String relPath = link.second;
             if (relPath.startsWith("./")) relPath = relPath.substring(2);
 
-            File linkFile = new File(stagingDir, relPath);
+            File linkFile = safeChild(stagingCanonical, relPath);
             File parent = linkFile.getParentFile();
             if (parent != null && !parent.exists()) parent.mkdirs();
-            if (linkFile.exists()) linkFile.delete();
+            if (linkFile.exists() || isSymlink(linkFile)) linkFile.delete();
             try {
                 Os.symlink(target, linkFile.getAbsolutePath());
             } catch (Exception e) {
-                Log.w(TAG, "Symlink creation: " + linkFile + " -> " + target, e);
+                Log.w(TAG, "Symlink creation failed: " + linkFile + " -> " + target, e);
             }
         }
-
-        // 5. Finalize directory placement
-        callback.onStatus("Optimizing package manager & paths...");
-        if (prefixDir.exists()) {
-            deleteRecursive(prefixDir);
-        }
-        if (!stagingDir.renameTo(prefixDir)) {
-            Log.w(TAG, "renameTo failed, falling back to recursive copy");
-            copyDirectoryRecursive(stagingDir, prefixDir);
-            deleteRecursive(stagingDir);
-        }
-
-        setupSystemDirsAndConfigs(context, prefixDir, homeDir);
-
-        if (tempZip.exists()) tempZip.delete();
-
-        Log.i(TAG, "BoomAux bootstrap successfully installed!");
-        callback.onSuccess();
     }
 
-    public static void setupSystemDirsAndConfigs(Context context, File prefixDir, File homeDir) {
-        String prefix = prefixDir.getAbsolutePath();
+    /** Resolves {@code name} below {@code rootCanonical} and rejects any path that escapes it. */
+    private static File safeChild(String rootCanonical, String name) throws IOException {
+        File f = new File(rootCanonical, name);
+        String canonical = f.getCanonicalPath();
+        if (!canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator)) {
+            throw new IOException("Unsafe path in archive: " + name);
+        }
+        return f;
+    }
 
-        File tmpDir = new File(prefixDir, "tmp");
-        if (!tmpDir.exists()) tmpDir.mkdirs();
-        File varTmpDir = new File(prefixDir, "var/tmp");
-        if (!varTmpDir.exists()) varTmpDir.mkdirs();
+    // ---------------------------------------------------------------- directories & mirror
 
-        // Essential apt & dpkg directories
+    /** Cheap and idempotent: only makes sure the directories apt/dpkg need exist. */
+    public static void ensureDirectories(File prefixDir, File homeDir) {
+        new File(prefixDir, "tmp").mkdirs();
+        new File(prefixDir, "var/tmp").mkdirs();
         new File(prefixDir, "var/lib/dpkg/updates").mkdirs();
         new File(prefixDir, "var/lib/dpkg/info").mkdirs();
         new File(prefixDir, "var/lib/dpkg/alternatives").mkdirs();
@@ -266,90 +357,76 @@ public class BootstrapInstaller {
         new File(prefixDir, "etc/apt/sources.list.d").mkdirs();
         new File(prefixDir, "etc/termux").mkdirs();
         new File(homeDir, ".termux").mkdirs();
-        new File(homeDir, ".config/pip").mkdirs();
 
-        File dpkgStatus = new File(prefixDir, "var/lib/dpkg/status");
-        if (!dpkgStatus.exists()) {
-            try { writeStringToFile(dpkgStatus, ""); } catch (Exception ignored) {}
-        }
-        File dpkgAvailable = new File(prefixDir, "var/lib/dpkg/available");
-        if (!dpkgAvailable.exists()) {
-            try { writeStringToFile(dpkgAvailable, ""); } catch (Exception ignored) {}
-        }
-
-        // Apply official mirror configuration
-        SharedPreferences prefs = context.getSharedPreferences("boomaux_prefs", Context.MODE_PRIVATE);
-        String mirrorUrl = prefs.getString("package_mirror", MIRROR_CLOUDFLARE);
-        applyMirrorConfig(prefixDir, homeDir, mirrorUrl);
-
-        // Ensure binaries have executable permissions
-        File binDir = new File(prefixDir, "bin");
-        File[] bins = binDir.listFiles();
-        if (bins != null) {
-            for (File b : bins) {
-                try {
-                    Os.chmod(b.getAbsolutePath(), 0755);
-                } catch (Exception ignored) {}
-            }
+        try {
+            File dpkgStatus = new File(prefixDir, "var/lib/dpkg/status");
+            if (!dpkgStatus.exists()) writeStringToFile(dpkgStatus, "");
+            File dpkgAvailable = new File(prefixDir, "var/lib/dpkg/available");
+            if (!dpkgAvailable.exists()) writeStringToFile(dpkgAvailable, "");
+        } catch (IOException e) {
+            Log.w(TAG, "Could not create dpkg database files", e);
         }
     }
 
-    public static void updateMirror(Context context, String mirrorUrl) {
+    public static void ensureDirectories(Context context) {
         File filesDir = context.getFilesDir();
         File prefixDir = new File(filesDir, "usr");
-        File homeDir = new File(filesDir, "home");
-        if (prefixDir.exists()) {
-            applyMirrorConfig(prefixDir, homeDir, mirrorUrl);
+        if (prefixDir.isDirectory()) {
+            ensureDirectories(prefixDir, new File(filesDir, "home"));
         }
     }
 
-    private static void applyMirrorConfig(File prefixDir, File homeDir, String mirrorUrl) {
-        String sourcesList = "deb " + mirrorUrl + " stable main\n";
-        try {
-            writeStringToFile(new File(prefixDir, "etc/apt/sources.list"), sourcesList);
-            writeStringToFile(new File(prefixDir, "etc/termux/chosen_mirror"), mirrorUrl + "\n");
-            writeStringToFile(new File(homeDir, ".termux/chosen_mirror"), mirrorUrl + "\n");
-        } catch (Exception ignored) {}
+    /** Called from Settings when the user picks another mirror. Does nothing if it did not change. */
+    public static void updateMirror(Context context, String mirrorUrl) {
+        File prefixDir = new File(context.getFilesDir(), "usr");
+        if (prefixDir.isDirectory()) {
+            applyMirrorConfig(prefixDir, mirrorUrl);
+        }
     }
 
-    private static SSLSocketFactory sPermissiveSSLSocketFactory = null;
-
-    private static synchronized SSLSocketFactory getPermissiveSSLSocketFactory() {
-        if (sPermissiveSSLSocketFactory != null) return sPermissiveSSLSocketFactory;
-        try {
-            TrustManager[] trustAllCerts = new TrustManager[]{
-                    new X509TrustManager() {
-                        public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                            return new java.security.cert.X509Certificate[0];
-                        }
-                        public void checkClientTrusted(java.security.cert.X509Certificate[] certs, String authType) {}
-                        public void checkServerTrusted(java.security.cert.X509Certificate[] certs, String authType) {}
-                    }
-            };
-            SSLContext sc = SSLContext.getInstance("TLS");
-            sc.init(null, trustAllCerts, new java.security.SecureRandom());
-            sPermissiveSSLSocketFactory = sc.getSocketFactory();
-        } catch (Exception ignored) {}
-        return sPermissiveSSLSocketFactory;
+    private static String mirrorFileFor(String mirrorUrl) {
+        if (MIRROR_OFFICIAL.equals(mirrorUrl)) return "europe/packages.termux.dev";
+        if (MIRROR_TSINGHUA.equals(mirrorUrl)) return "chinese_mainland/mirrors.tuna.tsinghua.edu.cn";
+        if (MIRROR_BFSU.equals(mirrorUrl)) return "chinese_mainland/mirrors.bfsu.edu.cn";
+        return "default"; // Cloudflare
     }
 
-    private static void downloadWithProgress(String urlString, File destFile, Callback callback) throws IOException {
+    /**
+     * pkg reads {@code etc/termux/chosen_mirrors} (a symlink to one of the files in
+     * {@code etc/termux/mirrors}) and rewrites sources.list from it. Pointing the symlink at the
+     * chosen mirror makes pkg use it instead of testing every mirror in the world on each run.
+     */
+    private static void applyMirrorConfig(File prefixDir, String mirrorUrl) {
+        try {
+            String relative = mirrorFileFor(mirrorUrl);
+            File mirrorFile = new File(prefixDir, "etc/termux/mirrors/" + relative);
+            File chosen = new File(prefixDir, "etc/termux/chosen_mirrors");
+
+            if (mirrorFile.isFile()) {
+                if (chosen.exists() || isSymlink(chosen)) deleteRecursive(chosen);
+                Os.symlink(mirrorFile.getAbsolutePath(), chosen.getAbsolutePath());
+            }
+            writeStringToFile(new File(prefixDir, "etc/apt/sources.list"),
+                    "deb " + mirrorUrl + " stable main\n");
+        } catch (Exception e) {
+            Log.w(TAG, "Could not apply mirror configuration", e);
+        }
+    }
+
+    // ---------------------------------------------------------------- download
+
+    private static void downloadVerified(String urlString, File destFile, String expectedSha,
+                                         Callback callback) throws Exception {
         String currentUrl = urlString;
         HttpURLConnection conn = null;
 
         for (int i = 0; i < 10; i++) {
             URL url = new URL(currentUrl);
-            conn = (HttpURLConnection) url.openConnection();
-            if (conn instanceof HttpsURLConnection) {
-                HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
-                SSLSocketFactory sf = getPermissiveSSLSocketFactory();
-                if (sf != null) {
-                    httpsConn.setSSLSocketFactory(sf);
-                }
-                httpsConn.setHostnameVerifier((hostname, session) -> true);
+            if (!"https".equalsIgnoreCase(url.getProtocol())) {
+                throw new IOException("Refusing non-HTTPS download URL");
             }
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36");
-            conn.setRequestProperty("Accept", "*/*");
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestProperty("User-Agent", "BoomAux/1.0");
             conn.setConnectTimeout(20000);
             conn.setReadTimeout(45000);
             conn.setInstanceFollowRedirects(false);
@@ -361,34 +438,23 @@ public class BootstrapInstaller {
                     code == 307 || code == 308) {
                 String location = conn.getHeaderField("Location");
                 conn.disconnect();
-                if (location != null) {
-                    if (location.startsWith("/")) {
-                        currentUrl = url.getProtocol() + "://" + url.getHost() + location;
-                    } else {
-                        currentUrl = location;
-                    }
-                    continue;
-                }
+                conn = null;
+                if (location == null) throw new IOException("Redirect without Location header");
+                currentUrl = location.startsWith("/")
+                        ? url.getProtocol() + "://" + url.getHost() + location
+                        : location;
+                continue;
             }
-
             if (code == HttpURLConnection.HTTP_OK) {
                 break;
             }
             conn.disconnect();
-            throw new IOException("HTTP " + code + " returned from server");
+            throw new IOException("HTTP " + code + " from " + url.getHost());
         }
+        if (conn == null) throw new IOException("Too many redirects");
 
-        if (conn == null) throw new IOException("Unable to establish connection");
-
-        long contentLength = conn.getContentLength();
-        if (contentLength <= 0) {
-            String lenStr = conn.getHeaderField("Content-Length");
-            if (lenStr != null) {
-                try {
-                    contentLength = Long.parseLong(lenStr);
-                } catch (NumberFormatException ignored) {}
-            }
-        }
+        long contentLength = conn.getContentLengthLong();
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
         try (InputStream in = new BufferedInputStream(conn.getInputStream());
              FileOutputStream out = new FileOutputStream(destFile)) {
@@ -399,19 +465,21 @@ public class BootstrapInstaller {
 
             while ((read = in.read(buf)) != -1) {
                 out.write(buf, 0, read);
+                digest.update(buf, 0, read);
                 totalRead += read;
 
                 long now = System.currentTimeMillis();
                 if (now - lastReportTime > 200) {
                     lastReportTime = now;
                     double currentMB = totalRead / (1024.0 * 1024.0);
-                    int percent = contentLength > 0 ? (int) ((totalRead * 100) / contentLength) : -1;
                     String msg;
                     if (contentLength > 0) {
                         double totalMB = contentLength / (1024.0 * 1024.0);
-                        msg = String.format(java.util.Locale.US, "Downloading BoomAux: %.1f MB / %.1f MB (%d%%)", currentMB, totalMB, percent);
+                        int percent = (int) ((totalRead * 100) / contentLength);
+                        msg = String.format(Locale.US, "Downloading BoomAux: %.1f MB / %.1f MB (%d%%)",
+                                currentMB, totalMB, percent);
                     } else {
-                        msg = String.format(java.util.Locale.US, "Downloading BoomAux: %.1f MB...", currentMB);
+                        msg = String.format(Locale.US, "Downloading BoomAux: %.1f MB...", currentMB);
                     }
                     callback.onProgress(totalRead, contentLength, msg);
                 }
@@ -419,16 +487,53 @@ public class BootstrapInstaller {
         } finally {
             conn.disconnect();
         }
+
+        callback.onStatus("Verifying download...");
+        String actual = toHex(digest.digest());
+        if (!expectedSha.equalsIgnoreCase(actual)) {
+            destFile.delete();
+            throw new IOException("Checksum mismatch: the downloaded file is not the expected "
+                    + "official bootstrap. Please try again on another network.");
+        }
     }
 
+    private static String sha256Of(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
+            byte[] buf = new byte[16384];
+            int read;
+            while ((read = in.read(buf)) != -1) {
+                digest.update(buf, 0, read);
+            }
+        }
+        return toHex(digest.digest());
+    }
+
+    private static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format(Locale.US, "%02x", b));
+        }
+        return sb.toString();
+    }
+
+    // ---------------------------------------------------------------- file helpers
+
+    /** True if the path itself is a symbolic link (does not follow it). Works on all API levels. */
+    public static boolean isSymlink(File file) {
+        try {
+            return OsConstants.S_ISLNK(Os.lstat(file.getPath()).st_mode);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Deletes a file or directory tree. Symbolic links are removed, never followed. */
     public static void deleteRecursive(File fileOrDirectory) {
         if (fileOrDirectory == null) return;
-        boolean isSymlink = false;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            isSymlink = java.nio.file.Files.isSymbolicLink(fileOrDirectory.toPath());
-        }
-        if (!isSymlink && !fileOrDirectory.exists()) return;
-        if (!isSymlink && fileOrDirectory.isDirectory()) {
+        boolean symlink = isSymlink(fileOrDirectory);
+        if (!symlink && !fileOrDirectory.exists()) return;
+        if (!symlink && fileOrDirectory.isDirectory()) {
             File[] files = fileOrDirectory.listFiles();
             if (files != null) {
                 for (File child : files) {
@@ -442,30 +547,11 @@ public class BootstrapInstaller {
     private static void copyFile(File src, File dest) throws IOException {
         try (InputStream in = new FileInputStream(src);
              FileOutputStream out = new FileOutputStream(dest)) {
-            byte[] buf = new byte[8192];
+            byte[] buf = new byte[16384];
             int read;
             while ((read = in.read(buf)) != -1) {
                 out.write(buf, 0, read);
             }
-        }
-    }
-
-    private static void copyDirectoryRecursive(File src, File dest) throws IOException {
-        if (src.isDirectory()) {
-            if (!dest.exists()) dest.mkdirs();
-            File[] children = src.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    copyDirectoryRecursive(child, new File(dest, child.getName()));
-                }
-            }
-        } else {
-            copyFile(src, dest);
-            try {
-                if (src.canExecute()) {
-                    Os.chmod(dest.getAbsolutePath(), 0755);
-                }
-            } catch (Exception ignored) {}
         }
     }
 
@@ -476,4 +562,4 @@ public class BootstrapInstaller {
             fos.write(content.getBytes(StandardCharsets.UTF_8));
         }
     }
-}
+    }
