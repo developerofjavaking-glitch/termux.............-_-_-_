@@ -1,4 +1,4 @@
-name: Build APK
+name: Build BoomAux APK
 
 on:
   push:
@@ -8,8 +8,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Secrets cannot be used in step-level `if`, so expose a plain true/false flag instead.
+      HAS_SIGNING: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -18,18 +21,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Use the Gradle wrapper (8.8, matches AGP 8.5.0). This action only adds caching.
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
 
-      - name: Create .env file (Gemini API key)
-        run: |
-          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
-            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
-          else
-            echo "GEMINI_API_KEY=dummy_key_for_ci_build" > .env
-          fi
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
 
       - name: Generate debug keystore
         run: |
@@ -39,13 +36,32 @@ jobs:
             -alias androiddebugkey \
             -keypass android \
             -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+            -dname "CN=BoomAux Debug,O=BoomAux,C=US"
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace
 
-      - name: Upload APK artifact
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
+          name: boomaux-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+
+      - name: Build signed release APK
+        if: env.HAS_SIGNING == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.keystore"
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Upload signed release APK
+        if: env.HAS_SIGNING == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: boomaux-release-apk
+          path: app/build/outputs/apk/release/*.apk
