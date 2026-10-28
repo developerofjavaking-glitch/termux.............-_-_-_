@@ -17,6 +17,7 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalSession;
@@ -59,11 +60,16 @@ public class TermuxService extends Service implements TerminalSessionClient {
     private ServiceSessionListener sessionListener;
     private TerminalSessionClient activeClient;
     private PowerManager.WakeLock wakeLock;
-    private boolean isWakeLockEnabled = false;
+
+    /** True while the activity swaps all sessions (bootstrap finished / environment reset). */
+    private volatile boolean replacingSessions = false;
+    /** True after the service decided to stop; prevents startForeground() from re-posting the notification. */
+    private volatile boolean stopping = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        CrashHandler.init(this);
         createNotificationChannel();
 
         SharedPreferences prefs = getSharedPreferences("boomaux_prefs", MODE_PRIVATE);
@@ -79,24 +85,21 @@ public class TermuxService extends Service implements TerminalSessionClient {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && intent.getAction() != null) {
-            String action = intent.getAction();
-            if (ACTION_STOP_SERVICE.equals(action)) {
-                stopAllSessionsAndSelf();
-                return START_NOT_STICKY;
-            } else if (ACTION_TOGGLE_WAKELOCK.equals(action)) {
-                setWakeLock(!isWakeLockHeld());
-                return START_STICKY;
-            } else if (ACTION_NEW_SESSION.equals(action)) {
-                Intent mainIntent = new Intent(this, MainActivity.class);
-                mainIntent.setAction(ACTION_NEW_SESSION);
-                mainIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(mainIntent);
-                return START_STICKY;
-            } else if (ACTION_EXECUTE_BOOT_SCRIPT.equals(action)) {
-                executeBootScript();
-                return START_STICKY;
-            }
+        String action = intent != null ? intent.getAction() : null;
+        if (ACTION_STOP_SERVICE.equals(action)) {
+            stopAllSessionsAndSelf();
+            return START_NOT_STICKY;
+        }
+
+        // Any other start request revives a service that was previously asked to stop.
+        stopping = false;
+
+        if (ACTION_TOGGLE_WAKELOCK.equals(action)) {
+            setWakeLock(!isWakeLockHeld());
+            return START_STICKY;
+        } else if (ACTION_EXECUTE_BOOT_SCRIPT.equals(action)) {
+            executeBootScript();
+            return START_STICKY;
         }
 
         updateNotification();
@@ -121,32 +124,39 @@ public class TermuxService extends Service implements TerminalSessionClient {
 
     @Override
     public void onDestroy() {
+        stopping = true;
         setWakeLock(false);
-        for (TerminalSession s : sessions) {
-            s.finishIfRunning();
+        synchronized (this) {
+            for (TerminalSession s : sessions) {
+                s.finishIfRunning();
+            }
+            sessions.clear();
         }
-        sessions.clear();
         super.onDestroy();
     }
 
     // ---------------------------------------------------------------- WakeLock
 
     public synchronized void setWakeLock(boolean enable) {
-        this.isWakeLockEnabled = enable;
         if (enable) {
             if (wakeLock == null) {
                 PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                 if (pm != null) {
                     wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BoomAux:BotRunner");
-                    wakeLock.acquire();
-                    Log.i(TAG, "WakeLock acquired successfully.");
+                    wakeLock.setReferenceCounted(false);
                 }
             }
+            if (wakeLock != null && !wakeLock.isHeld()) {
+                wakeLock.acquire();
+                Log.i(TAG, "WakeLock acquired successfully.");
+            }
         } else {
-            if (wakeLock != null && wakeLock.isHeld()) {
-                wakeLock.release();
+            if (wakeLock != null) {
+                if (wakeLock.isHeld()) {
+                    wakeLock.release();
+                    Log.i(TAG, "WakeLock released.");
+                }
                 wakeLock = null;
-                Log.i(TAG, "WakeLock released.");
             }
         }
         updateNotification();
@@ -158,8 +168,17 @@ public class TermuxService extends Service implements TerminalSessionClient {
 
     // ---------------------------------------------------------------- session management
 
+    /** Returns a snapshot copy, so callers can iterate it while sessions change. */
     public synchronized List<TerminalSession> getSessions() {
-        return sessions;
+        return new ArrayList<>(sessions);
+    }
+
+    public void setReplacingSessions(boolean replacing) {
+        this.replacingSessions = replacing;
+    }
+
+    public boolean isReplacingSessions() {
+        return replacingSessions;
     }
 
     public synchronized int getCurrentSessionIndex() {
@@ -193,6 +212,12 @@ public class TermuxService extends Service implements TerminalSessionClient {
         sessions.add(session);
         currentSessionIndex = sessions.size() - 1;
 
+        if (stopping) {
+            // The service was asked to stop (all sessions had ended) but is still bound. Make it a
+            // started foreground service again so these sessions survive the activity going away.
+            stopping = false;
+            ContextCompat.startForegroundService(this, new Intent(this, TermuxService.class));
+        }
         updateNotification();
         if (sessionListener != null) {
             sessionListener.onSessionListChanged();
@@ -216,12 +241,16 @@ public class TermuxService extends Service implements TerminalSessionClient {
             sessionListener.onSessionListChanged();
         }
 
-        if (sessions.isEmpty()) {
+        if (sessions.isEmpty() && !replacingSessions) {
+            stopping = true;
+            setWakeLock(false);
+            stopForeground(true);
             stopSelf();
         }
     }
 
     public synchronized void stopAllSessionsAndSelf() {
+        stopping = true;
         for (TerminalSession s : sessions) {
             s.finishIfRunning();
         }
@@ -247,6 +276,9 @@ public class TermuxService extends Service implements TerminalSessionClient {
     private void executeBootScript() {
         if (!BootstrapInstaller.isInstalled(this)) {
             Log.w(TAG, "Bootstrap not yet installed. Skipping boot script execution.");
+            if (getSessions().isEmpty()) {
+                stopAllSessionsAndSelf();
+            }
             return;
         }
 
@@ -297,7 +329,12 @@ public class TermuxService extends Service implements TerminalSessionClient {
     }
 
     public void updateNotification() {
-        int count = sessions.size();
+        if (stopping) return;
+
+        int count;
+        synchronized (this) {
+            count = sessions.size();
+        }
         String sessionStr = count == 1 ? getString(R.string.notification_single_session) :
                 (count == 0 ? getString(R.string.notification_no_sessions) : getString(R.string.notification_multi_sessions, count));
 
@@ -309,11 +346,15 @@ public class TermuxService extends Service implements TerminalSessionClient {
         PendingIntent contentPendingIntent = PendingIntent.getActivity(this, 0, notifyIntent,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
 
-        // Action: New Session
-        Intent newSessionIntent = new Intent(this, TermuxService.class);
+        // Action: New Session. Must open the activity directly: starting an activity from a service
+        // is blocked on Android 10+, but a PendingIntent.getActivity() from a notification is allowed.
+        Intent newSessionIntent = new Intent(this, MainActivity.class);
         newSessionIntent.setAction(ACTION_NEW_SESSION);
-        PendingIntent newSessionPendingIntent = PendingIntent.getService(this, 1, newSessionIntent,
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+        newSessionIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent newSessionPendingIntent = PendingIntent.getActivity(this, 1, newSessionIntent,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                        ? (PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT)
+                        : PendingIntent.FLAG_UPDATE_CURRENT);
 
         // Action: WakeLock Toggle
         Intent wakeLockIntent = new Intent(this, TermuxService.class);
@@ -426,4 +467,4 @@ public class TermuxService extends Service implements TerminalSessionClient {
     @Override public void logVerbose(String tag, String message) { Log.v(tag, message); }
     @Override public void logStackTraceWithMessage(String tag, String message, Exception e) { Log.e(tag, message, e); }
     @Override public void logStackTrace(String tag, Exception e) { Log.e(tag, "Exception", e); }
-}
+                    }
