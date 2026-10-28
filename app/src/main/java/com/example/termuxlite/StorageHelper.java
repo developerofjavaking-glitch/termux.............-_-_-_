@@ -2,7 +2,6 @@ package com.example.termuxlite;
 
 import android.content.Context;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Environment;
 import android.system.Os;
 import android.util.Log;
@@ -65,7 +64,16 @@ public class StorageHelper {
 
     private static boolean createSymlinkSafe(String target, File link) {
         try {
-            if (link.exists() || isSymlink(link)) {
+            if (BootstrapInstaller.isSymlink(link)) {
+                link.delete(); // remove only the link, never what it points to
+            } else if (link.exists()) {
+                if (link.isDirectory()) {
+                    String[] children = link.list();
+                    if (children != null && children.length > 0) {
+                        Log.w(TAG, "Not replacing non-empty directory " + link);
+                        return false;
+                    }
+                }
                 link.delete();
             }
             Os.symlink(target, link.getAbsolutePath());
@@ -76,18 +84,17 @@ public class StorageHelper {
         }
     }
 
-    private static boolean isSymlink(File file) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            return java.nio.file.Files.isSymbolicLink(file.toPath());
-        }
-        return false;
-    }
-
     public static void copyUriToHome(Context context, Uri sourceUri, String destFileName) throws IOException {
         File home = new File(context.getFilesDir(), "home");
         if (!home.exists()) home.mkdirs();
 
-        File destFile = new File(home, destFileName);
+        // Keep only the last path segment: a provider-supplied name must never escape home.
+        String safeName = destFileName == null ? "" : new File(destFileName).getName().trim();
+        if (safeName.isEmpty() || ".".equals(safeName) || "..".equals(safeName)) {
+            safeName = "imported_file";
+        }
+
+        File destFile = new File(home, safeName);
         try (InputStream in = context.getContentResolver().openInputStream(sourceUri);
              OutputStream out = new FileOutputStream(destFile)) {
             if (in == null) throw new IOException("Cannot open input stream for URI: " + sourceUri);
@@ -115,7 +122,7 @@ public class StorageHelper {
 
         byte[] buffer = new byte[8192];
         for (File file : files) {
-            if (isSymlink(file)) continue; // skip storage symlinks in backup
+            if (BootstrapInstaller.isSymlink(file)) continue; // skip storage symlinks (e.g. /sdcard)
 
             String relPath = file.getAbsolutePath().substring(basePath.length());
             if (relPath.startsWith("/")) relPath = relPath.substring(1);
@@ -142,6 +149,7 @@ public class StorageHelper {
     public static void restoreHomeFromZip(Context context, InputStream inputStream) throws IOException {
         File home = new File(context.getFilesDir(), "home");
         if (!home.exists()) home.mkdirs();
+        final String homeCanonical = home.getCanonicalPath();
 
         byte[] buffer = new byte[8192];
         try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(inputStream))) {
@@ -149,6 +157,13 @@ public class StorageHelper {
             while ((entry = zis.getNextEntry()) != null) {
                 String name = entry.getName();
                 File outFile = new File(home, name);
+
+                // Zip-slip / symlink protection: the resolved path must stay inside home.
+                String canonical = outFile.getCanonicalPath();
+                if (!canonical.equals(homeCanonical) && !canonical.startsWith(homeCanonical + File.separator)) {
+                    throw new IOException("Unsafe path in backup: " + name);
+                }
+
                 if (entry.isDirectory()) {
                     outFile.mkdirs();
                 } else {
@@ -165,4 +180,4 @@ public class StorageHelper {
             }
         }
     }
-}
+                   }
