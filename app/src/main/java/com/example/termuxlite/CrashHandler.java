@@ -9,7 +9,6 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -53,10 +52,14 @@ public class CrashHandler implements Thread.UncaughtExceptionHandler {
     public static String readCrashLog(Context context) {
         File file = getCrashFile(context);
         if (!file.exists()) return "";
-        try (FileInputStream fis = new FileInputStream(file)) {
-            byte[] data = new byte[(int) Math.min(file.length(), 65536)];
-            int read = fis.read(data);
-            return new String(data, 0, Math.max(0, read), StandardCharsets.UTF_8);
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+            // Read the newest part of the log (the end of the file), at most 64 KB.
+            long length = raf.length();
+            int size = (int) Math.min(length, 65536);
+            raf.seek(length - size);
+            byte[] data = new byte[size];
+            raf.readFully(data);
+            return new String(data, 0, size, StandardCharsets.UTF_8);
         } catch (Exception e) {
             Log.e(TAG, "Error reading crash log", e);
             return "";
@@ -117,10 +120,14 @@ public class CrashHandler implements Thread.UncaughtExceptionHandler {
         report.append("Stacktrace:\n").append(stackTrace).append("\n");
         report.append("=========================================\n\n");
 
+        // Keep the log from growing forever.
+        if (crashFile.exists() && crashFile.length() > 256 * 1024) {
+            crashFile.delete();
+        }
         try (FileOutputStream fos = new FileOutputStream(crashFile, true)) {
             fos.write(report.toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception ex) {
             Log.e(TAG, "Could not append crash log", ex);
         }
     }
-}
+            }
